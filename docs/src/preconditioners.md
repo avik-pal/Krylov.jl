@@ -18,7 +18,7 @@ There exist three variants of preconditioning:
 where $P_{\ell}$ and $P_r$ are square and nonsingular.
 
 The left preconditioning preserves the error $x_k - x^{\star}$ whereas the right preconditioning keeps invariant the residual $b - A x_k$.
-Two-sided preconditioning is the only variant that allows to preserve the hermicity of a linear system.
+Two-sided preconditioning is the only variant that allows to preserve the Hermiticity of a linear system.
 
 !!! note
     Because det$(P^{-1}A - \lambda I)$ = det$(A - \lambda P)$ det$(P^{-1})$ = det$(AP^{-1} - \lambda I)$, the eigenvalues of $P^{-1}A$ and $AP^{-1}$ are identical. If $P = LL^{H}$, $L^{-1}AL^{-H}$ also has the same spectrum.
@@ -30,12 +30,13 @@ Krylov.jl supports both approaches thanks to the argument `ldiv` of the Krylov s
 ## How to use preconditioners in Krylov.jl?
 
 !!! info
-    - A preconditioner only need support the operation `mul!(y, P⁻¹, x)` when `ldiv=false` or `ldiv!(y, P, x)` when `ldiv=true` to be used in Krylov.jl.
+    - A preconditioner only needs to support the operation `mul!(y, P⁻¹, x)` when `ldiv=false` or `ldiv!(y, P, x)` when `ldiv=true` to be used in Krylov.jl.
+    - Additional support for `adjoint` with preconditioners is required in the methods [`BILQ`](@ref bilq) and [`QMR`](@ref qmr).
     - The default value of a preconditioner in Krylov.jl is the identity operator `I`.
 
 ### Square non-Hermitian linear systems
 
-Methods concerned: [`CGS`](@ref cgs), [`BiCGSTAB`](@ref bicgstab), [`DQGMRES`](@ref dqgmres), [`GMRES`](@ref gmres), [`BLOCK-GMRES`](@ref block_gmres), [`FGMRES`](@ref fgmres), [`DIOM`](@ref diom) and [`FOM`](@ref fom).
+Methods concerned: [`CGS`](@ref cgs), [`BILQ`](@ref bilq), [`QMR`](@ref qmr), [`BiCGSTAB`](@ref bicgstab), [`DQGMRES`](@ref dqgmres), [`GMRES`](@ref gmres), [`BLOCK-GMRES`](@ref block_gmres), [`FGMRES`](@ref fgmres), [`DIOM`](@ref diom) and [`FOM`](@ref fom).
 
 A Krylov method dedicated to non-Hermitian linear systems allows the three variants of preconditioning.
 
@@ -45,10 +46,10 @@ A Krylov method dedicated to non-Hermitian linear systems allows the three varia
 
 ### Hermitian linear systems
 
-Methods concerned: [`SYMMLQ`](@ref symmlq), [`CG`](@ref cg), [`CG-LANCZOS`](@ref cg_lanczos), [`CG-LANCZOS-SHIFT`](@ref cg_lanczos_shift), [`CR`](@ref cr), [`CAR`](@ref car), [`MINRES`](@ref minres), [`MINRES-QLP`](@ref minres_qlp) and [`MINARES`](@ref minares).
+Methods concerned: [`SYMMLQ`](@ref symmlq), [`CG`](@ref cg), [`CG-LANCZOS`](@ref cg_lanczos), [`CG-LANCZOS-SHIFT`](@ref cg_lanczos_shift), [`CR`](@ref cr), [`CAR`](@ref car), [`MINRES`](@ref minres), [`BLOCK-MINRES`](@ref block_minres), [`MINRES-QLP`](@ref minres_qlp) and [`MINARES`](@ref minares).
 
 When $A$ is Hermitian, we can only use centered preconditioning $L^{-1}AL^{-H}y = L^{-1}b$ with $x = L^{-H}y$.
-Centered preconditioning is a special case of two-sided preconditioning with $P_{\ell} = L = P_r^H$ that maintains hermicity.
+Centered preconditioning is a special case of two-sided preconditioning with $P_{\ell} = L = P_r^H$ that maintains Hermiticity.
 However, there is no need to specify $L$ and one may specify $P_c = LL^H$ or its inverse directly.
 
 | Preconditioners | $P_c^{-1}$                | $P_c$                |
@@ -56,7 +57,7 @@ However, there is no need to specify $L$ and one may specify $P_c = LL^H$ or its
 | Arguments       | `M` with `ldiv=false`     | `M` with `ldiv=true` |
 
 !!! warning
-    The preconditioner `M` must be hermitian and positive definite.
+    The preconditioner `M` must be Hermitian and positive definite.
 
 ### Linear least-squares problems
 
@@ -81,11 +82,14 @@ Methods concerned: [`CGLS`](@ref cgls), [`CRLS`](@ref crls), [`LSLQ`](@ref lslq)
 | Arguments       | `M` with `ldiv=false`   | `M` with `ldiv=true` | `N` with `ldiv=false`   | `N` with `ldiv=true` |
 
 !!! warning
-    The preconditioners `M` and `N` must be hermitian and positive definite.
+    The preconditioners `M` and `N` must be Hermitian and positive definite.
+
+!!! note
+    [`CGLS`](@ref cgls) and [`CRLS`](@ref crls) only accept `M`; they do not support `N`.
 
 ### Linear least-norm problems
 
-Methods concerned: [`CGNE`](@ref cgne), [`CRMR`](@ref crmr), [`LNLQ`](@ref lnlq), [`CRAIG`](@ref craig) and [`CRAIGMR`](@ref craigmr).
+Methods concerned: [`LNLQ`](@ref lnlq), [`CRAIG`](@ref craig) and [`CRAIGMR`](@ref craigmr).
 
 | Formulation          | Without preconditioning                              | With preconditioning                                 |
 |:--------------------:|:----------------------------------------------------:|:----------------------------------------------------:|
@@ -106,7 +110,11 @@ Methods concerned: [`CGNE`](@ref cgne), [`CRMR`](@ref crmr), [`LNLQ`](@ref lnlq)
 | Arguments       | `M` with `ldiv=false`   | `M` with `ldiv=true` | `N` with `ldiv=false`   | `N` with `ldiv=true` |
 
 !!! warning
-    The preconditioners `M` and `N` must be hermitian and positive definite.
+    The preconditioners `M` and `N` must be Hermitian and positive definite.
+
+!!! note
+    [`CGNE`](@ref cgne) and [`CRMR`](@ref crmr) only accept `N`, and it does not play the role of $F^{-1}$ above.
+    It preconditions the normal equations of the second kind $(AA^H + \lambda^2 I)y = b$, so it is $m \times m$ and leaves the minimized norm unchanged.
 
 ### Saddle-point and symmetric quasi-definite systems
 
@@ -119,7 +127,7 @@ Methods concerned: [`CGNE`](@ref cgne), [`CRMR`](@ref crmr), [`LNLQ`](@ref lnlq)
 | Arguments       | `M` with `ldiv=false` | `M` with `ldiv=true` | `N` with `ldiv=false` | `N` with `ldiv=true` |
 
 !!! warning
-    The preconditioners `M` and `N` must be hermitian and positive definite.
+    The preconditioners `M` and `N` must be Hermitian and positive definite.
 
 ### Generalized saddle-point and unsymmetric partitioned systems
 
@@ -132,11 +140,11 @@ Methods concerned: [`CGNE`](@ref cgne), [`CRMR`](@ref crmr), [`LNLQ`](@ref lnlq)
 | Arguments       | `C` and `E` with `ldiv=false` | `C` and `E` with `ldiv=true` | `D` and `F` with `ldiv=false` | `D` and `F` with `ldiv=true` |
 
 !!! note
-    Our implementations of [`BiLQ`](@ref bilq), [`QMR`](@ref qmr), [`BiLQR`](@ref bilqr), [`USYMLQ`](@ref usymlq), [`USYMQR`](@ref usymqr) and [`TriLQR`](@ref trilqr) don't support preconditioning.
+    Our implementations of [`BiLQ`](@ref bilq), [`QMR`](@ref qmr), [`BiLQR`](@ref bilqr), [`USYMLQ`](@ref usymlq), [`USYMQR`](@ref usymqr), [`USYMLQR`](@ref usymlqr), [`TriLQR`](@ref trilqr) and [`CGLS-LANCZOS-SHIFT`](@ref cgls_lanczos_shift) don't support preconditioning.
 
 ## Packages that provide preconditioners
 
-- [IncompleteLU.jl](https://github.com/haampie/IncompleteLU.jl) implements the left-looking and Crout versions of ILU decompositions.
+- [KrylovPreconditioners.jl](https://github.com/JuliaSmoothOptimizers/KrylovPreconditioners.jl) implements block-Jacobi, IC(0) and ILU(0) preconditioners.
 - [ILUZero.jl](https://github.com/mcovalt/ILUZero.jl) is a Julia implementation of incomplete LU factorization with zero level of fill-in. 
 - [LimitedLDLFactorizations.jl](https://github.com/JuliaSmoothOptimizers/LimitedLDLFactorizations.jl) for limited-memory LDLᵀ factorization of symmetric matrices.
 - [AlgebraicMultigrid.jl](https://github.com/JuliaLinearAlgebra/AlgebraicMultigrid.jl) provides two algebraic multigrid (AMG) preconditioners.
@@ -144,6 +152,13 @@ Methods concerned: [`CGNE`](@ref cgne), [`CRMR`](@ref crmr), [`LNLQ`](@ref lnlq)
 - [BasicLU.jl](https://github.com/JuliaSmoothOptimizers/BasicLU.jl) uses a sparse LU factorization to compute a maximum volume basis that can be used as a preconditioner for least-norm and least-squares problems.
 
 ## Examples
+
+```julia
+using KrylovPreconditioners, Krylov
+
+P⁻¹ = BlockJacobiPreconditioner(A)  # Block-Jacobi preconditioner
+x, stats = gmres(A, b, M=P⁻¹)
+```
 
 ```julia
 using Krylov
@@ -162,7 +177,7 @@ x, stats = minres(A, b, M=P⁻¹)
 ```
 
 ```julia
-using IncompleteLU, Krylov
+using KrylovPreconditioners, Krylov
 Pℓ = ilu(A)
 x, stats = gmres(A, b, M=Pℓ, ldiv=true)  # left preconditioning
 ```
@@ -189,6 +204,18 @@ N = ldl(F)
 # [E   A] [x] = [b]
 # [Aᴴ -F] [y]   [c]
 x, y, stats = tricg(A, b, c, M=M, N=N, ldiv=true)
+```
+
+```julia
+using RandomizedPreconditioners, Krylov
+
+Â = NystromSketch(A, k, r)
+
+P = NystromPreconditioner(Â, μ)
+x, stats = cg(A + μ*I, b; M=P, ldiv=true)
+
+P⁻¹ = NystromPreconditionerInverse(Â, μ)
+x, stats = cg(A + μ*I, b; M=P⁻¹)
 ```
 
 ```julia

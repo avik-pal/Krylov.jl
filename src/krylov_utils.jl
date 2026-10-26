@@ -24,29 +24,25 @@ function sym_givens(a :: T, b :: T) where T <: AbstractFloat
   # http://www.stanford.edu/group/SOL/dissertations/sou-cheng-choi-thesis.pdf
   # D. Orban, Montreal, May 2015.
 
-  if b == 0
-    if a == 0
-      c = one(T)
-    else
-      c = sign(a)  # In Julia, sign(0) = 0.
-    end
+  if iszero(b)
+    c = T(sign(a) + iszero(a)) # In Julia, sign(0) = 0.
     s = zero(T)
     ρ = abs(a)
 
-  elseif a == 0
+  elseif iszero(a)
     c = zero(T)
-    s = sign(b)
+    s = T(sign(b))
     ρ = abs(b)
 
   elseif abs(b) > abs(a)
     t = a / b
-    s = sign(b) / sqrt(one(T) + t * t)
+    s = T(sign(b)) / sqrt(oneunit(T) + t * t)
     c = s * t
     ρ = b / s  # Computationally better than ρ = a / c since |c| ≤ |s|.
 
   else
     t = b / a
-    c = sign(a) / sqrt(one(T) + t * t)
+    c = T(sign(a)) / sqrt(oneunit(T) + t * t)
     s = c * t
     ρ = a / c  # Computationally better than ρ = b / s since |s| ≤ |c|
   end
@@ -206,7 +202,12 @@ Return the most relevant storage type `S` based on the type of `v`.
 function ktypeof end
 
 function ktypeof(v::S) where S <: DenseVector
-  return S
+  if S.name.name == :ComponentArray
+    T = eltype(S)
+    return Vector{T}
+  else
+    return S
+  end
 end
 
 function ktypeof(v::S) where S <: DenseMatrix
@@ -214,9 +215,9 @@ function ktypeof(v::S) where S <: DenseMatrix
 end
 
 function ktypeof(v::S) where S <: AbstractVector
-  if S.name.name == :Zeros || S.name.name == :Ones || S.name.name == :SArray || S.name.name == :MArray || S.name.name == :SizedArray || S.name.name == :FieldArray || S.name.name == :ComponentArray
+  if S.name.name == :Zeros || S.name.name == :Ones || S.name.name == :SArray || S.name.name == :MArray || S.name.name == :SizedArray || S.name.name == :FieldArray
     T = eltype(S)
-    return Vector{T}  # FillArrays, StaticArrays, ComponentArrays
+    return Vector{T}  # FillArrays, StaticArrays
   else
     return S  # BlockArrays, PartitionedArrays, etc...
   end
@@ -277,111 +278,85 @@ function matrix_to_vector(::Type{M}) where M <: DenseMatrix
   return S
 end
 
-"""
-    v = kzeros(S, n)
+@inline function allocate_if(bool, workspace, v, ::Type{S}, u) where S
+  start_allocation_time = time_ns()
+  if bool && isempty(workspace.:($v)::S)
+    workspace.:($v)::S = similar(u)
+  end
+  workspace.stats.allocation_timer += start_allocation_time |> ktimer
+  return nothing
+end
 
-Create a vector of storage type `S` of length `n` only composed of zero.
-"""
-kzeros(S, n) = fill!(S(undef, n), zero(eltype(S)))
+# @inline allocate_if(bool, workspace, v, ::Type{S}, n::Int) where S = bool && isempty(workspace.:($v)::S) && (workspace.:($v)::S = S(undef, n))
 
-"""
-    v = kones(S, n)
-
-Create a vector of storage type `S` of length `n` only composed of one.
-"""
-kones(S, n) = fill!(S(undef, n), one(eltype(S)))
-
-allocate_if(bool, solver, v, S, n) = bool && isempty(solver.:($v)::S) && (solver.:($v)::S = S(undef, n))
-allocate_if(bool, solver, v, S, m, n) = bool && isempty(solver.:($v)::S) && (solver.:($v)::S = S(undef, m, n))
+@inline function allocate_if(bool, workspace, v, ::Type{S}, m::Int, n::Int) where S
+  start_allocation_time = time_ns()
+  if bool && isempty(workspace.:($v)::S)
+    workspace.:($v)::S = S(undef, m, n)
+  end
+  workspace.stats.allocation_timer += start_allocation_time |> ktimer
+  return nothing
+end
 
 kdisplay(iter, verbose) = (verbose > 0) && (mod(iter, verbose) == 0)
 
 ktimer(start_time::UInt64) = (time_ns() - start_time) / 1e9
 
-mulorldiv!(y, P, x, ldiv::Bool) = ldiv ? ldiv!(y, P, x) : mul!(y, P, x)
+kmul!(y, P, x) = mul!(y, P, x)
+kldiv!(y, P, x) = ldiv!(y, P, x)
+mulorldiv!(y, P, x, ldiv::Bool) = ldiv ? kldiv!(y, P, x) : kmul!(y, P, x)
 
-kdot(n :: Integer, x :: Vector{T}, dx :: Integer, y :: Vector{T}, dy :: Integer) where T <: BLAS.BlasReal = BLAS.dot(n, x, dx, y, dy)
-kdot(n :: Integer, x :: Vector{T}, dx :: Integer, y :: Vector{T}, dy :: Integer) where T <: BLAS.BlasComplex = BLAS.dotc(n, x, dx, y, dy)
-kdot(n :: Integer, x :: AbstractVector{T}, dx :: Integer, y :: AbstractVector{T}, dy :: Integer) where T <: FloatOrComplex = dot(x, y)
+kdot(n :: Integer, x :: Vector{T}, y :: Vector{T}) where T <: BLAS.BlasReal = BLAS.dot(n, x, 1, y, 1)
+kdot(n :: Integer, x :: Vector{T}, y :: Vector{T}) where T <: BLAS.BlasComplex = BLAS.dotc(n, x, 1, y, 1)
+kdot(n :: Integer, x :: AbstractVector{T}, y :: AbstractVector{T}) where T <: FloatOrComplex = dot(x, y)
 
-kdotr(n :: Integer, x :: AbstractVector{T}, dx :: Integer, y :: AbstractVector{T}, dy :: Integer) where T <: AbstractFloat = kdot(n, x, dx, y, dy)
-kdotr(n :: Integer, x :: AbstractVector{Complex{T}}, dx :: Integer, y :: AbstractVector{Complex{T}}, dy :: Integer) where T <: AbstractFloat = real(kdot(n, x, dx, y, dy))
+kdotr(n :: Integer, x :: AbstractVector{T}, y :: AbstractVector{T}) where T <: AbstractFloat = kdot(n, x, y)
+kdotr(n :: Integer, x :: AbstractVector{Complex{T}}, y :: AbstractVector{Complex{T}}) where T <: AbstractFloat = kdot(n, x, y) |> real
 
-knrm2(n :: Integer, x :: Vector{T}, dx :: Integer) where T <: BLAS.BlasFloat = BLAS.nrm2(n, x, dx)
-knrm2(n :: Integer, x :: AbstractVector{T}, dx :: Integer) where T <: FloatOrComplex = norm(x)
+kdoti(n :: Integer, x :: AbstractVector{T}, y :: AbstractVector{T}) where T <: AbstractFloat = kdot(n, x, y)
+kdoti(n :: Integer, x :: AbstractVector{Complex{T}}, y :: AbstractVector{Complex{T}}) where T <: AbstractFloat = im * (kdot(n, x, y) |> imag)
 
-kscal!(n :: Integer, s :: T, x :: Vector{T}, dx :: Integer) where T <: BLAS.BlasFloat = BLAS.scal!(n, s, x, dx)
-kscal!(n :: Integer, s :: T, x :: AbstractVector{T}, dx :: Integer) where T <: FloatOrComplex = (x .*= s)
-kscal!(n :: Integer, s :: T, x :: AbstractVector{Complex{T}}, dx :: Integer) where T <: AbstractFloat = kscal!(n, Complex{T}(s), x, dx)
+knorm(n :: Integer, x :: Vector{T}) where T <: BLAS.BlasFloat = BLAS.nrm2(n, x, 1)
+knorm(n :: Integer, x :: AbstractVector{T}) where T <: FloatOrComplex = norm(x)
 
-kaxpy!(n :: Integer, s :: T, x :: Vector{T}, dx :: Integer, y :: Vector{T}, dy :: Integer) where T <: BLAS.BlasFloat = BLAS.axpy!(n, s, x, dx, y, dy)
-kaxpy!(n :: Integer, s :: T, x :: AbstractVector{T}, dx :: Integer, y :: AbstractVector{T}, dy :: Integer) where T <: FloatOrComplex = axpy!(s, x, y)
-kaxpy!(n :: Integer, s :: T, x :: AbstractVector{Complex{T}}, dx :: Integer, y :: AbstractVector{Complex{T}}, dy :: Integer) where T <: AbstractFloat = kaxpy!(n, Complex{T}(s), x, dx, y, dy)
+knorm_elliptic(n :: Integer, x :: AbstractVector{T}, y :: AbstractVector{T}) where T <: FloatOrComplex = (x === y) ? knorm(n, x) : kdotr(n, x, y) |> sqrt
 
-kaxpby!(n :: Integer, s :: T, x :: Vector{T}, dx :: Integer, t :: T, y :: Vector{T}, dy :: Integer) where T <: BLAS.BlasFloat = BLAS.axpby!(n, s, x, dx, t, y, dy)
-kaxpby!(n :: Integer, s :: T, x :: AbstractVector{T}, dx :: Integer, t :: T, y :: AbstractVector{T}, dy :: Integer) where T <: FloatOrComplex = axpby!(s, x, t, y)
-kaxpby!(n :: Integer, s :: T, x :: AbstractVector{Complex{T}}, dx :: Integer, t :: Complex{T}, y :: AbstractVector{Complex{T}}, dy :: Integer) where T <: AbstractFloat = kaxpby!(n, Complex{T}(s), x, dx, t, y, dy)
-kaxpby!(n :: Integer, s :: Complex{T}, x :: AbstractVector{Complex{T}}, dx :: Integer, t :: T, y :: AbstractVector{Complex{T}}, dy :: Integer) where T <: AbstractFloat = kaxpby!(n, s, x, dx, Complex{T}(t), y, dy)
-kaxpby!(n :: Integer, s :: T, x :: AbstractVector{Complex{T}}, dx :: Integer, t :: T, y :: AbstractVector{Complex{T}}, dy :: Integer) where T <: AbstractFloat = kaxpby!(n, Complex{T}(s), x, dx, Complex{T}(t), y, dy)
+kscal!(n :: Integer, s :: T, x :: Vector{T}) where T <: BLAS.BlasFloat = BLAS.scal!(n, s, x, 1)
+kscal!(n :: Integer, s :: T, x :: AbstractVector{T}) where T <: FloatOrComplex = rmul!(x, s)
+kscal!(n :: Integer, s :: T, x :: AbstractVector{Complex{T}}) where T <: AbstractFloat = kscal!(n, Complex{T}(s), x)
 
-kcopy!(n :: Integer, x :: Vector{T}, dx :: Integer, y :: Vector{T}, dy :: Integer) where T <: BLAS.BlasFloat = BLAS.blascopy!(n, x, dx, y, dy)
-kcopy!(n :: Integer, x :: AbstractVector{T}, dx :: Integer, y :: AbstractVector{T}, dy :: Integer) where T <: FloatOrComplex = copyto!(y, x)
+kdiv!(n :: Integer, x :: AbstractVector{T}, s :: T) where T <: FloatOrComplex = kscal!(n, one(T) / s, x)
+kdiv!(n :: Integer, x :: AbstractVector{Complex{T}}, s :: T) where T <: AbstractFloat = kscal!(n, one(T) / s, x)
 
-kgeqrf!(A :: AbstractMatrix{T}, tau :: AbstractVector{T}) where T <: BLAS.BlasFloat = LAPACK.geqrf!(A, tau)
-korgqr!(A :: AbstractMatrix{T}, tau :: AbstractVector{T}) where T <: BLAS.BlasFloat = LAPACK.orgqr!(A, tau)
-kormqr!(side :: Char, trans :: Char, A :: AbstractMatrix{T}, tau :: AbstractVector{T}, C :: AbstractMatrix{T}) where T <: BLAS.BlasFloat = LAPACK.ormqr!(side, trans, A, tau, C)
+kcopy!(n :: Integer, y :: Vector{T}, x :: Vector{T}) where T <: BLAS.BlasFloat = BLAS.blascopy!(n, x, 1, y, 1)
+kcopy!(n :: Integer, y :: AbstractVector, x :: AbstractVector) = copyto!(y, x)
 
-macro kgeqrf!(A, tau)
-  return esc(:(Krylov.kgeqrf!($A, $tau)))
-end
+kscalcopy!(n :: Integer, y :: AbstractVector{T}, s :: T, x :: AbstractVector{T}) where T <: FloatOrComplex = (y .= s .* x)
+kscalcopy!(n :: Integer, y :: AbstractVector{Complex{T}}, s :: T, x :: AbstractVector{Complex{T}}) where T <: AbstractFloat = (y .= s .* x)
 
-macro korgqr!(A, tau)
-  return esc(:(Krylov.korgqr!($A, $tau)))
-end
+kdivcopy!(n :: Integer, y :: AbstractVector{T}, x :: AbstractVector{T}, s :: T) where T <: FloatOrComplex = (y .= x ./ s)
+kdivcopy!(n :: Integer, y :: AbstractVector{Complex{T}}, x :: AbstractVector{Complex{T}}, s :: T) where T <: AbstractFloat = (y .= x ./ s)
 
-macro kormqr!(side, trans, A, tau, C)
-  return esc(:(Krylov.kormqr!($side, $trans, $A, $tau, $C)))
-end
+kaxpy!(n :: Integer, s :: T, x :: Vector{T}, y :: Vector{T}) where T <: BLAS.BlasFloat = BLAS.axpy!(n, s, x, 1, y, 1)
+kaxpy!(n :: Integer, s :: T, x :: AbstractVector{T}, y :: AbstractVector{T}) where T <: FloatOrComplex = axpy!(s, x, y)
+kaxpy!(n :: Integer, s :: T, x :: AbstractVector{Complex{T}}, y :: AbstractVector{Complex{T}}) where T <: AbstractFloat = kaxpy!(n, Complex{T}(s), x, y)
 
-# the macros are just for readability, so we don't have to write the increments (always equal to 1)
-macro kdot(n, x, y)
-  return esc(:(Krylov.kdot($n, $x, 1, $y, 1)))
-end
+kaxpby!(n :: Integer, s :: T, x :: Vector{T}, t :: T, y :: Vector{T}) where T <: BLAS.BlasFloat = BLAS.axpby!(n, s, x, 1, t, y, 1)
+kaxpby!(n :: Integer, s :: T, x :: AbstractVector{T}, t :: T, y :: AbstractVector{T}) where T <: FloatOrComplex = axpby!(s, x, t, y)
+kaxpby!(n :: Integer, s :: T, x :: AbstractVector{Complex{T}}, t :: Complex{T}, y :: AbstractVector{Complex{T}}) where T <: AbstractFloat = kaxpby!(n, Complex{T}(s), x, t, y)
+kaxpby!(n :: Integer, s :: Complex{T}, x :: AbstractVector{Complex{T}}, t :: T, y :: AbstractVector{Complex{T}}) where T <: AbstractFloat = kaxpby!(n, s, x, Complex{T}(t), y)
+kaxpby!(n :: Integer, s :: T, x :: AbstractVector{Complex{T}}, t :: T, y :: AbstractVector{Complex{T}}) where T <: AbstractFloat = kaxpby!(n, Complex{T}(s), x, Complex{T}(t), y)
 
-macro kdotr(n, x, y)
-  return esc(:(Krylov.kdotr($n, $x, 1, $y, 1)))
-end
+kfill!(x :: AbstractArray{T}, val :: T) where T <: FloatOrComplex = fill!(x, val)
 
-macro knrm2(n, x)
-  return esc(:(Krylov.knrm2($n, $x, 1)))
-end
+kref!(n, x, y, c, s) = reflect!(x, y, c, s)
 
-macro kscal!(n, s, x)
-  return esc(:(Krylov.kscal!($n, $s, $x, 1)))
-end
-
-macro kaxpy!(n, s, x, y)
-  return esc(:(Krylov.kaxpy!($n, $s, $x, 1, $y, 1)))
-end
-
-macro kaxpby!(n, s, x, t, y)
-  return esc(:(Krylov.kaxpby!($n, $s, $x, 1, $t, $y, 1)))
-end
-
-macro kcopy!(n, x, y)
-  return esc(:(Krylov.kcopy!($n, $x, 1, $y, 1)))
-end
-
-macro kswap(x, y)
+macro kswap!(x, y)
   quote
     local tmp = $(esc(x))
     $(esc(x)) = $(esc(y))
     $(esc(y)) = tmp
   end
-end
-
-macro kref!(n, x, y, c, s)
-  return esc(:(reflect!($x, $y, $c, $s)))
 end
 
 """
@@ -400,21 +375,32 @@ If `flip` is set to `true`, `σ1` and `σ2` are computed such that
 
     ‖x - σi d‖ = radius, i = 1, 2.
 """
-function to_boundary(n :: Int, x :: AbstractVector{FC}, d :: AbstractVector{FC}, radius :: T; flip :: Bool=false, xNorm2 :: T=zero(T), dNorm2 :: T=zero(T)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
+function to_boundary(n :: Int, x :: AbstractVector{FC}, d :: AbstractVector{FC}, z::AbstractVector{FC}, radius :: T; flip :: Bool=false, xNorm2 :: T=zero(T), dNorm2 :: T=zero(T), M=I, ldiv :: Bool = false) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
   radius > 0 || error("radius must be positive")
 
-  # ‖d‖² σ² + (xᴴd + dᴴx) σ + (‖x‖² - Δ²).
-  rxd = @kdotr(n, x, d)
-  flip && (rxd = -rxd)
-  dNorm2 == zero(T) && (dNorm2 = @kdotr(n, d, d))
+  if M === I
+    # ‖d‖² σ² + (xᴴd + dᴴx) σ + (‖x‖² - Δ²).
+    rxd = kdotr(n, x, d)
+    dNorm2 == zero(T) && (dNorm2 = kdotr(n, d, d))
+    xNorm2 == zero(T) && (xNorm2 = kdotr(n, x, x))
+  else
+    # (dᴴMd) σ² + (xᴴMd + dᴴMx) σ + (xᴴMx - Δ²).
+    mulorldiv!(z, M, x, ldiv)
+    rxd = kdot(n, z, d)
+    xNorm2 = kdotr(n, z, x)
+    mulorldiv!(z, M, d, ldiv)
+    dNorm2 = kdotr(n, z, d)
+  end
   dNorm2 == zero(T) && error("zero direction")
-  xNorm2 == zero(T) && (xNorm2 = @kdotr(n, x, x))
+  flip && (rxd = -rxd)
+
   radius2 = radius * radius
   (xNorm2 ≤ radius2) || error(@sprintf("outside of the trust region: ‖x‖²=%7.1e, Δ²=%7.1e", xNorm2, radius2))
 
   # q₂ = ‖d‖², q₁ = xᴴd + dᴴx, q₀ = ‖x‖² - Δ²
   # ‖x‖² ≤ Δ² ⟹ (q₁)² - 4 * q₂ * q₀ ≥ 0
-  roots = roots_quadratic(dNorm2, 2 * rxd, xNorm2 - radius2)
+  roots = roots_quadratic(dNorm2, 2 * real(rxd), xNorm2 - radius2)
+
   return roots  # `σ1` and `σ2`
 end
 
@@ -427,6 +413,6 @@ Implementation suggested by Mitchell J. O'Sullivan (@mosullivan93).
 function extract_parameters(ex::Expr)
   Meta.isexpr(ex, :tuple, 1) &&
   Meta.isexpr((@inbounds p = ex.args[1]), :parameters) &&
-  all(Base.Docs.validcall, p.args) || throw(ArgumentError("Given expression is not a kw parameter tuple [e.g. :(; x)]: $ex"))
-  return p.args
+  Base.Docs.validcall(p.args[]) || throw(ArgumentError("Given expression is not a kw parameter tuple [e.g. :(; x)]: $ex"))
+  return p.args[]
 end

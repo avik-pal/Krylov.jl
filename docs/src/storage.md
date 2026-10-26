@@ -39,7 +39,7 @@ This section provides the storage requirements of all Krylov methods available i
 
 We denote by $m$ and $n$ the number of rows and columns of the linear problem.
 The memory parameter of DIOM, FOM, DQGMRES, GMRES, FGMRES and GPMR is $k$.
-The numbers of shifts of CG-LANCZOS-SHIFT is $p$.
+The numbers of shifts of CG-LANCZOS-SHIFT and CGLS-LANCZOS-SHIFT is $p$.
 
 ## Theoretical storage requirements
 
@@ -81,9 +81,9 @@ Each table summarizes the storage requirements of Krylov methods recommended to 
 
 #### Least-squares problems
 
-| Methods | [`USYMQR`](@ref usymqr) | [`CGLS`](@ref cgls) | [`CRLS`](@ref crls) | [`LSLQ`](@ref lslq) | [`LSQR`](@ref lsqr) | [`LSMR`](@ref lsmr) |
-|:-------:|:-----------------------:|:-------------------:|:-------------------:|:-------------------:|:-------------------:|:-------------------:|
-| Storage | $6n + 3m$               | $3n + 2m$           | $4n + 3m$           | $4n + 2m$           | $4n + 2m$           | $5n + 2m$           |
+| Methods | [`USYMQR`](@ref usymqr) | [`CGLS`](@ref cgls) | [`CGLS-LANCZOS-SHIFT`](@ref cgls_lanczos_shift) | [`CRLS`](@ref crls) | [`LSLQ`](@ref lslq) | [`LSQR`](@ref lsqr) | [`LSMR`](@ref lsmr) |
+|:-------:|:-----------------------:|:-------------------:|:-----------------------------------------------:|:-------------------:|:-------------------:|:-------------------:|:-------------------:|
+| Storage | $6n + 3m$               | $3n + 2m$           | $3n + 2m + 5p + 2np$                            | $4n + 3m$           | $4n + 2m$           | $4n + 2m$           | $5n + 2m$           |
 
 #### Adjoint systems
 
@@ -93,9 +93,9 @@ Each table summarizes the storage requirements of Krylov methods recommended to 
 
 #### Saddle-point and Hermitian quasi-definite systems
 
-| Methods  | [`TriCG`](@ref tricg) | [`TriMR`](@ref trimr) |
-|:--------:|:---------------------:|:---------------------:|
-| Storage  | $6n + 6m$             | $8n + 8m$             |
+| Methods  | [`TriCG`](@ref tricg) | [`TriMR`](@ref trimr) | [`USYMLQR`](@ref usymlqr) |
+|:--------:|:---------------------:|:---------------------:|:-------------------------:|
+| Storage  | $6n + 6m$             | $8n + 8m$             | $7n + 6m$                 |
 
 #### Generalized saddle-point and non-Hermitian partitioned systems
 
@@ -105,8 +105,8 @@ Each table summarizes the storage requirements of Krylov methods recommended to 
 
 ## Practical storage requirements
 
-Each method has its own `KrylovSolver` that contains all the storage needed by the method.
-In the REPL, the size in bytes of each attribute and the total amount of memory allocated by the solver are displayed when we show a `KrylovSolver`.
+Each method has its own `KrylovWorkspace` that contains all the storage needed by the method.
+In the REPL, the size in bytes of each attribute and the total amount of memory allocated by the solver are displayed when we show a `KrylovWorkspace`.
 
 ```@example storage
 using Krylov
@@ -115,14 +115,14 @@ m = 5000
 n = 12000
 A = rand(Float64, m, n)
 b = rand(Float64, m)
-solver = LsmrSolver(A, b)
-show(stdout, solver, show_stats=false)
+workspace = LsmrWorkspace(A, b)
+show(stdout, workspace, show_stats=false)
 ```
 
-If we want the total number of bytes used by the solver, we can call `nbytes = sizeof(solver)`.
+If we want the total number of bytes used by the workspace, we can call `nbytes = sizeof(workspace)`.
 
 ```@example storage
-nbytes = sizeof(solver)
+nbytes = sizeof(workspace)
 ```
 
 Thereafter, we can use `Base.format_bytes(nbytes)` to recover what is displayed in the REPL.
@@ -140,7 +140,7 @@ ncoefs_lsmr = 5*n + 2*m                 # number of coefficients
 nbytes_lsmr = sizeof(FC) * ncoefs_lsmr  # number of bytes
 ```
 
-Therefore, you can check that you have enough memory in RAM to allocate a `KrylovSolver`.
+Therefore, you can check that you have enough memory in RAM to allocate a `KrylovWorkspace`.
 
 ```@example storage
 free_nbytes = Sys.free_memory()
@@ -149,4 +149,4 @@ Base.format_bytes(free_nbytes)  # Total free memory in RAM in bytes.
 
 !!! note
     - Beyond having faster operations, using low precisions, such as simple precision, allows to store more coefficients in RAM and solve larger linear problems.
-    - In the file [test_allocations.jl](https://github.com/JuliaSmoothOptimizers/Krylov.jl/blob/main/test/test_allocations.jl), we use the macro `@allocated` to test that we match the expected storage requirement of each method with a tolerance of 2%.
+    - In the file [test_allocations.jl](https://github.com/JuliaSmoothOptimizers/Krylov.jl/blob/main/test/test_allocations.jl), we use the macro `@allocated` to verify that the storage requirements of each Krylov solver match the expected values, within a tolerance of 2% (and 5% for block Krylov solvers). These tests are performed across the four main precisions: `Float32`, `Float64`, `ComplexF32`, and `ComplexF64`.

@@ -22,9 +22,9 @@ export qmr, qmr!
 
 """
     (x, stats) = qmr(A, b::AbstractVector{FC};
-                     c::AbstractVector{FC}=b, atol::T=√eps(T),
+                     c::AbstractVector{FC}=b, M=I, N=I, ldiv::Bool=false, atol::T=√eps(T),
                      rtol::T=√eps(T), itmax::Int=0, timemax::Float64=Inf, verbose::Int=0,
-                     history::Bool=false, callback=solver->false, iostream::IO=kstdout)
+                     history::Bool=false, callback=workspace->false, iostream::IO=kstdout)
 
 `T` is an `AbstractFloat` such as `Float32`, `Float64` or `BigFloat`.
 `FC` is `T` or `Complex{T}`.
@@ -38,31 +38,41 @@ Solve the square linear system Ax = b of size n using QMR.
 QMR is based on the Lanczos biorthogonalization process and requires two initial vectors `b` and `c`.
 The relation `bᴴc ≠ 0` must be satisfied and by default `c = b`.
 When `A` is Hermitian and `b = c`, QMR is equivalent to MINRES.
+QMR requires support for `adjoint(M)` and `adjoint(N)` if preconditioners are provided.
+
+#### Interface
+
+To easily switch between Krylov methods, use the generic interface [`krylov_solve`](@ref) with `method = :qmr`.
+
+For an in-place variant that reuses memory across solves, see [`qmr!`](@ref).
 
 #### Input arguments
 
-* `A`: a linear operator that models a matrix of dimension n;
-* `b`: a vector of length n.
+* `A`: a linear operator that models a matrix of dimension `n`;
+* `b`: a vector of length `n`.
 
 #### Optional argument
 
-* `x0`: a vector of length n that represents an initial guess of the solution x.
+* `x0`: a vector of length `n` that represents an initial guess of the solution `x`.
 
 #### Keyword arguments
 
 * `c`: the second initial vector of length `n` required by the Lanczos biorthogonalization process;
+* `M`: linear operator that models a nonsingular matrix of size `n` used for left preconditioning;
+* `N`: linear operator that models a nonsingular matrix of size `n` used for right preconditioning;
+* `ldiv`: define whether the preconditioners use `ldiv!` or `mul!`;
 * `atol`: absolute stopping tolerance based on the residual norm;
 * `rtol`: relative stopping tolerance based on the residual norm;
 * `itmax`: the maximum number of iterations. If `itmax=0`, the default number of iterations is set to `2n`;
 * `timemax`: the time limit in seconds;
 * `verbose`: additional details can be displayed if verbose mode is enabled (verbose > 0). Information will be displayed every `verbose` iterations;
 * `history`: collect additional statistics on the run such as residual norms, or Aᴴ-residual norms;
-* `callback`: function or functor called as `callback(solver)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
+* `callback`: function or functor called as `callback(workspace)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
 * `iostream`: stream to which output is logged.
 
 #### Output arguments
 
-* `x`: a dense vector of length n;
+* `x`: a dense vector of length `n`;
 * `stats`: statistics collected on the run in a [`SimpleStats`](@ref) structure.
 
 #### References
@@ -74,12 +84,15 @@ When `A` is Hermitian and `b = c`, QMR is equivalent to MINRES.
 function qmr end
 
 """
-    solver = qmr!(solver::QmrSolver, A, b; kwargs...)
-    solver = qmr!(solver::QmrSolver, A, b, x0; kwargs...)
+    workspace = qmr!(workspace::QmrWorkspace, A, b; kwargs...)
+    workspace = qmr!(workspace::QmrWorkspace, A, b, x0; kwargs...)
 
-where `kwargs` are keyword arguments of [`qmr`](@ref).
+In these calls, `kwargs` are keyword arguments of [`qmr`](@ref).
 
-See [`QmrSolver`](@ref) for more details about the `solver`.
+See [`QmrWorkspace`](@ref) for instructions on how to create the `workspace`.
+
+For a more generic interface, you can use [`krylov_workspace`](@ref) with `method = :qmr` to allocate the workspace,
+and [`krylov_solve!`](@ref) to run the Krylov method in-place.
 """
 function qmr! end
 
@@ -88,123 +101,123 @@ def_args_qmr = (:(A                    ),
 
 def_optargs_qmr = (:(x0::AbstractVector),)
 
-def_kwargs_qmr = (:(; c::AbstractVector{FC} = b ),
-                  :(; atol::T = √eps(T)         ),
-                  :(; rtol::T = √eps(T)         ),
-                  :(; itmax::Int = 0            ),
-                  :(; timemax::Float64 = Inf    ),
-                  :(; verbose::Int = 0          ),
-                  :(; history::Bool = false     ),
-                  :(; callback = solver -> false),
-                  :(; iostream::IO = kstdout    ))
+def_kwargs_qmr = (:(; c::AbstractVector{FC} = b    ),
+                  :(; M = I                        ),
+                  :(; N = I                        ),
+                  :(; ldiv::Bool = false           ),
+                  :(; atol::T = √eps(T)            ),
+                  :(; rtol::T = √eps(T)            ),
+                  :(; itmax::Int = 0               ),
+                  :(; timemax::Float64 = Inf       ),
+                  :(; verbose::Int = 0             ),
+                  :(; history::Bool = false        ),
+                  :(; callback = workspace -> false),
+                  :(; iostream::IO = kstdout       ))
 
-def_kwargs_qmr = mapreduce(extract_parameters, vcat, def_kwargs_qmr)
+def_kwargs_qmr = extract_parameters.(def_kwargs_qmr)
 
 args_qmr = (:A, :b)
 optargs_qmr = (:x0,)
-kwargs_qmr = (:c, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback, :iostream)
+kwargs_qmr = (:c, :M, :N, :ldiv, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback, :iostream)
 
 @eval begin
-  function qmr($(def_args_qmr...), $(def_optargs_qmr...); $(def_kwargs_qmr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = QmrSolver(A, b)
-    warm_start!(solver, $(optargs_qmr...))
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    qmr!(solver, $(args_qmr...); $(kwargs_qmr...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.stats)
-  end
-
-  function qmr($(def_args_qmr...); $(def_kwargs_qmr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = QmrSolver(A, b)
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    qmr!(solver, $(args_qmr...); $(kwargs_qmr...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.stats)
-  end
-
-  function qmr!(solver :: QmrSolver{T,FC,S}, $(def_args_qmr...); $(def_kwargs_qmr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
+  function qmr!(workspace :: QmrWorkspace{T,FC,S}, $(def_args_qmr...); $(def_kwargs_qmr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
 
     # Timer
     start_time = time_ns()
     timemax_ns = 1e9 * timemax
 
     m, n = size(A)
-    (m == solver.m && n == solver.n) || error("(solver.m, solver.n) = ($(solver.m), $(solver.n)) is inconsistent with size(A) = ($m, $n)")
+    (m == workspace.m && n == workspace.n) || error("(workspace.m, workspace.n) = ($(workspace.m), $(workspace.n)) is inconsistent with size(A) = ($m, $n)")
     m == n || error("System must be square")
     length(b) == m || error("Inconsistent problem size")
     (verbose > 0) && @printf(iostream, "QMR: system of size %d\n", n)
 
+    # Check M = Iₙ and N = Iₙ
+    MisI = (M === I)
+    NisI = (N === I)
+
     # Check type consistency
     eltype(A) == FC || @warn "eltype(A) ≠ $FC. This could lead to errors or additional allocations in operator-vector products."
-    ktypeof(b) <: S || error("ktypeof(b) is not a subtype of $S")
-    ktypeof(c) <: S || error("ktypeof(c) is not a subtype of $S")
+    ktypeof(b) == S || error("ktypeof(b) must be equal to $S")
+    ktypeof(c) == S || error("ktypeof(c) must be equal to $S")
 
-    # Compute the adjoint of A
+    # Compute the adjoint of A, M and N
     Aᴴ = A'
+    Mᴴ = M'
+    Nᴴ = N'
 
     # Set up workspace.
-    uₖ₋₁, uₖ, q, vₖ₋₁, vₖ, p = solver.uₖ₋₁, solver.uₖ, solver.q, solver.vₖ₋₁, solver.vₖ, solver.p
-    Δx, x, wₖ₋₂, wₖ₋₁, stats = solver.Δx, solver.x, solver.wₖ₋₂, solver.wₖ₋₁, solver.stats
-    warm_start = solver.warm_start
+    allocate_if(!MisI, workspace, :t, S, workspace.x)  # The length of t is n
+    allocate_if(!NisI, workspace, :s, S, workspace.x)  # The length of s is n
+    uₖ₋₁, uₖ, q, vₖ₋₁, vₖ, p = workspace.uₖ₋₁, workspace.uₖ, workspace.q, workspace.vₖ₋₁, workspace.vₖ, workspace.p
+    Δx, x, wₖ₋₂, wₖ₋₁, stats = workspace.Δx, workspace.x, workspace.wₖ₋₂, workspace.wₖ₋₁, workspace.stats
+    warm_start = workspace.warm_start
     rNorms = stats.residuals
     reset!(stats)
     r₀ = warm_start ? q : b
+    Mᴴuₖ = MisI ? uₖ : workspace.t
+    t = MisI ? q : workspace.t
+    Nvₖ = NisI ? vₖ : workspace.s
+    s = NisI ? p : workspace.s
 
     if warm_start
-      mul!(r₀, A, Δx)
-      @kaxpby!(n, one(FC), b, -one(FC), r₀)
+      kmul!(r₀, A, Δx)
+      kaxpby!(n, one(FC), b, -one(FC), r₀)
+    end
+    if !MisI
+      mulorldiv!(workspace.t, M, r₀, ldiv)
+      r₀ = workspace.t
     end
 
     # Initial solution x₀ and residual norm ‖r₀‖.
-    x .= zero(FC)
-    rNorm = @knrm2(n, r₀)  # ‖r₀‖ = ‖b₀ - Ax₀‖
+    kfill!(x, zero(FC))
+    rNorm = knorm(n, r₀)  # ‖r₀‖ = ‖b₀ - Ax₀‖
 
     history && push!(rNorms, rNorm)
     if rNorm == 0
       stats.niter = 0
       stats.solved = true
       stats.inconsistent = false
-      stats.timer = ktimer(start_time)
-      stats.status = "x = 0 is a zero-residual solution"
-      solver.warm_start = false
-      return solver
+      stats.timer = start_time |> ktimer
+      stats.status = "x is a zero-residual solution"
+      warm_start && kaxpy!(n, one(FC), Δx, x)
+      workspace.warm_start = false
+      return workspace
     end
 
     iter = 0
     itmax == 0 && (itmax = 2*n)
 
-    ε = atol + rtol * rNorm
-    (verbose > 0) && @printf(iostream, "%5s  %7s  %5s\n", "k", "‖rₖ‖", "timer")
-    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %.2fs\n", iter, rNorm, ktimer(start_time))
-
     # Initialize the Lanczos biorthogonalization process.
-    cᴴb = @kdot(n, c, r₀)  # ⟨c,r₀⟩
+    cᴴb = kdot(n, c, r₀)  # ⟨c,r₀⟩
     if cᴴb == 0
       stats.niter = 0
       stats.solved = false
       stats.inconsistent = false
-      stats.timer = ktimer(start_time)
+      stats.timer = start_time |> ktimer
       stats.status = "Breakdown bᴴc = 0"
-      solver.warm_start = false
-      return solver
+      warm_start && kaxpy!(n, one(FC), Δx, x)
+      workspace.warm_start = false
+      return workspace
     end
 
-    βₖ = √(abs(cᴴb))             # β₁γ₁ = cᴴ(b - Ax₀)
-    γₖ = cᴴb / βₖ                # β₁γ₁ = cᴴ(b - Ax₀)
-    vₖ₋₁ .= zero(FC)             # v₀ = 0
-    uₖ₋₁ .= zero(FC)             # u₀ = 0
-    vₖ .= r₀ ./ βₖ               # v₁ = (b - Ax₀) / β₁
-    uₖ .= c ./ conj(γₖ)          # u₁ = c / γ̄₁
-    cₖ₋₂ = cₖ₋₁ = cₖ = zero(T)   # Givens cosines used for the QR factorization of Tₖ₊₁.ₖ
-    sₖ₋₂ = sₖ₋₁ = sₖ = zero(FC)  # Givens sines used for the QR factorization of Tₖ₊₁.ₖ
-    wₖ₋₂ .= zero(FC)             # Column k-2 of Wₖ = Vₖ(Rₖ)⁻¹
-    wₖ₋₁ .= zero(FC)             # Column k-1 of Wₖ = Vₖ(Rₖ)⁻¹
-    ζbarₖ = βₖ                   # ζbarₖ is the last component of z̅ₖ = (Qₖ)ᴴβ₁e₁
-    τₖ = @kdotr(n, vₖ, vₖ)       # τₖ is used for the residual norm estimate
+    ε = atol + rtol * rNorm
+    (verbose > 0) && @printf(iostream, "%5s  %8s  %7s  %5s\n", "k", "αₖ", "‖rₖ‖", "timer")
+    kdisplay(iter, verbose) && @printf(iostream, "%5d  %8.1e  %7.1e  %.2fs\n", iter, cᴴb, rNorm, start_time |> ktimer)
+
+    βₖ = √(abs(cᴴb))               # β₁γ₁ = cᴴ(b - Ax₀)
+    γₖ = cᴴb / βₖ                  # β₁γ₁ = cᴴ(b - Ax₀)
+    kfill!(vₖ₋₁, zero(FC))         # v₀ = 0
+    kfill!(uₖ₋₁, zero(FC))         # u₀ = 0
+    kdivcopy!(n, vₖ, r₀, βₖ)       # v₁ = (b - Ax₀) / β₁
+    kdivcopy!(n, uₖ, c, conj(γₖ))  # u₁ = c / γ̄₁
+    cₖ₋₂ = cₖ₋₁ = cₖ = zero(T)     # Givens cosines used for the QR factorization of Tₖ₊₁.ₖ
+    sₖ₋₂ = sₖ₋₁ = sₖ = zero(FC)    # Givens sines used for the QR factorization of Tₖ₊₁.ₖ
+    kfill!(wₖ₋₂, zero(FC))         # Column k-2 of Wₖ = Vₖ(Rₖ)⁻¹
+    kfill!(wₖ₋₁, zero(FC))         # Column k-1 of Wₖ = Vₖ(Rₖ)⁻¹
+    ζbarₖ = βₖ                     # ζbarₖ is the last component of z̅ₖ = (Qₖ)ᴴβ₁e₁
+    τₖ = kdotr(n, vₖ, vₖ)          # τₖ is used for the residual norm estimate
 
     # Stopping criterion.
     solved    = rNorm ≤ ε
@@ -219,23 +232,30 @@ kwargs_qmr = (:c, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback,
       iter = iter + 1
 
       # Continue the Lanczos biorthogonalization process.
-      # AVₖ  = VₖTₖ    + βₖ₊₁vₖ₊₁(eₖ)ᵀ = Vₖ₊₁Tₖ₊₁.ₖ
-      # AᴴUₖ = Uₖ(Tₖ)ᴴ + γ̄ₖ₊₁uₖ₊₁(eₖ)ᵀ = Uₖ₊₁(Tₖ.ₖ₊₁)ᴴ
+      # MANVₖ    = VₖTₖ    + βₖ₊₁vₖ₊₁(eₖ)ᵀ = Vₖ₊₁Tₖ₊₁.ₖ
+      # NᴴAᴴMᴴUₖ = Uₖ(Tₖ)ᴴ + γ̄ₖ₊₁uₖ₊₁(eₖ)ᵀ = Uₖ₊₁(Tₖ.ₖ₊₁)ᴴ
 
-      mul!(q, A , vₖ)  # Forms vₖ₊₁ : q ← Avₖ
-      mul!(p, Aᴴ, uₖ)  # Forms uₖ₊₁ : p ← Aᴴuₖ
+      # Forms vₖ₊₁ : q ← MANvₖ
+      NisI || mulorldiv!(Nvₖ, N, vₖ, ldiv)
+      kmul!(t, A, Nvₖ)
+      MisI || mulorldiv!(q, M, t, ldiv)
 
-      @kaxpy!(n, -γₖ, vₖ₋₁, q)  # q ← q - γₖ * vₖ₋₁
-      @kaxpy!(n, -βₖ, uₖ₋₁, p)  # p ← p - β̄ₖ * uₖ₋₁
+      # Forms uₖ₊₁ : p ← NᴴAᴴMᴴuₖ
+      MisI || mulorldiv!(Mᴴuₖ, Mᴴ, uₖ, ldiv)
+      kmul!(s, Aᴴ, Mᴴuₖ)
+      NisI || mulorldiv!(p, Nᴴ, s, ldiv)
 
-      αₖ = @kdot(n, uₖ, q)      # αₖ = ⟨uₖ,q⟩
+      kaxpy!(n, -γₖ, vₖ₋₁, q)  # q ← q - γₖ * vₖ₋₁
+      kaxpy!(n, -βₖ, uₖ₋₁, p)  # p ← p - β̄ₖ * uₖ₋₁
 
-      @kaxpy!(n, -     αₖ , vₖ, q)    # q ← q - αₖ * vₖ
-      @kaxpy!(n, -conj(αₖ), uₖ, p)    # p ← p - ᾱₖ * uₖ
+      αₖ = kdot(n, uₖ, q)  # αₖ = ⟨uₖ,q⟩
 
-      pᴴq = @kdot(n, p, q)      # pᴴq  = ⟨p,q⟩
-      βₖ₊₁ = √(abs(pᴴq))        # βₖ₊₁ = √(|pᴴq|)
-      γₖ₊₁ = pᴴq / βₖ₊₁         # γₖ₊₁ = pᴴq / βₖ₊₁
+      kaxpy!(n, -     αₖ , vₖ, q)  # q ← q - αₖ * vₖ
+      kaxpy!(n, -conj(αₖ), uₖ, p)  # p ← p - ᾱₖ * uₖ
+
+      pᴴq = kdot(n, p, q)  # pᴴq  = ⟨p,q⟩
+      βₖ₊₁ = √(abs(pᴴq))   # βₖ₊₁ = √(|pᴴq|)
+      γₖ₊₁ = pᴴq / βₖ₊₁    # γₖ₊₁ = pᴴq / βₖ₊₁
 
       # Update the QR factorization of Tₖ₊₁.ₖ = Qₖ [ Rₖ ].
       #                                            [ Oᵀ ]
@@ -248,9 +268,9 @@ kwargs_qmr = (:c, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback,
       # [ •           •  βₖ  αₖ ]      [ •              •  δₖ ]
       # [ 0  •  •  •  •  0  βₖ₊₁]      [ 0  •  •  •  •  •  0  ]
       #
-      # If k = 1, we don't have any previous reflexion.
-      # If k = 2, we apply the last reflexion.
-      # If k ≥ 3, we only apply the two previous reflexions.
+      # If k = 1, we don't have any previous reflection.
+      # If k = 2, we apply the last reflection.
+      # If k ≥ 3, we only apply the two previous reflections.
 
       # Apply previous Givens reflections Qₖ₋₂.ₖ₋₁
       if iter ≥ 3
@@ -295,40 +315,39 @@ kwargs_qmr = (:c, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback,
       # w₁ = v₁ / δ₁
       if iter == 1
         wₖ = wₖ₋₁
-        @kaxpy!(n, one(FC), vₖ, wₖ)
-        @. wₖ = wₖ / δₖ
+        kdivcopy!(n, wₖ, vₖ, δₖ)
       end
       # w₂ = (v₂ - λ₁w₁) / δ₂
       if iter == 2
         wₖ = wₖ₋₂
-        @kaxpy!(n, -λₖ₋₁, wₖ₋₁, wₖ)
-        @kaxpy!(n, one(FC), vₖ, wₖ)
-        @. wₖ = wₖ / δₖ
+        kaxpy!(n, -λₖ₋₁, wₖ₋₁, wₖ)
+        kaxpy!(n, one(FC), vₖ, wₖ)
+        kdiv!(n, wₖ, δₖ)
       end
       # wₖ = (vₖ - λₖ₋₁wₖ₋₁ - ϵₖ₋₂wₖ₋₂) / δₖ
       if iter ≥ 3
-        @kscal!(n, -ϵₖ₋₂, wₖ₋₂)
+        kscal!(n, -ϵₖ₋₂, wₖ₋₂)
         wₖ = wₖ₋₂
-        @kaxpy!(n, -λₖ₋₁, wₖ₋₁, wₖ)
-        @kaxpy!(n, one(FC), vₖ, wₖ)
-        @. wₖ = wₖ / δₖ
+        kaxpy!(n, -λₖ₋₁, wₖ₋₁, wₖ)
+        kaxpy!(n, one(FC), vₖ, wₖ)
+        kdiv!(n, wₖ, δₖ)
       end
 
       # Compute solution xₖ.
       # xₖ ← xₖ₋₁ + ζₖ * wₖ
-      @kaxpy!(n, ζₖ, wₖ, x)
+      kaxpy!(n, ζₖ, wₖ, x)
 
       # Compute vₖ₊₁ and uₖ₊₁.
-      @. vₖ₋₁ = vₖ  # vₖ₋₁ ← vₖ
-      @. uₖ₋₁ = uₖ  # uₖ₋₁ ← uₖ
+      kcopy!(n, vₖ₋₁, vₖ)  # vₖ₋₁ ← vₖ
+      kcopy!(n, uₖ₋₁, uₖ)  # uₖ₋₁ ← uₖ
 
       if pᴴq ≠ zero(FC)
-        @. vₖ = q / βₖ₊₁        # βₖ₊₁vₖ₊₁ = q
-        @. uₖ = p / conj(γₖ₊₁)  # γ̄ₖ₊₁uₖ₊₁ = p
+        kdivcopy!(n, vₖ, q, βₖ₊₁)        # vₖ₊₁ = q / βₖ₊₁
+        kdivcopy!(n, uₖ, p, conj(γₖ₊₁))  # uₖ₊₁ = p / γ̄ₖ₊₁
       end
 
       # Compute τₖ₊₁ = τₖ + ‖vₖ₊₁‖²
-      τₖ₊₁ = τₖ + @kdotr(n, vₖ, vₖ)
+      τₖ₊₁ = τₖ + kdotr(n, vₖ, vₖ)
 
       # Compute ‖rₖ‖ ≤ |ζbarₖ₊₁|√τₖ₊₁
       rNorm = abs(ζbarₖ₊₁) * √τₖ₊₁
@@ -336,7 +355,7 @@ kwargs_qmr = (:c, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback,
 
       # Update directions for x.
       if iter ≥ 2
-        @kswap(wₖ₋₂, wₖ₋₁)
+        @kswap!(wₖ₋₂, wₖ₋₁)
       end
 
       # Update ζbarₖ, βₖ, γₖ and τₖ.
@@ -345,19 +364,15 @@ kwargs_qmr = (:c, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback,
       γₖ    = γₖ₊₁
       τₖ    = τₖ₊₁
 
-      # Stopping conditions that do not depend on user input.
-      # This is to guard against tolerances that are unreasonably small.
-      resid_decrease_mach = (rNorm + one(T) ≤ one(T))
-
       # Update stopping criterion.
-      user_requested_exit = callback(solver) :: Bool
+      user_requested_exit = callback(workspace) :: Bool
       resid_decrease_lim = rNorm ≤ ε
-      solved = resid_decrease_lim || resid_decrease_mach
+      solved = resid_decrease_lim
       tired = iter ≥ itmax
       breakdown = !solved && (pᴴq == 0)
       timer = time_ns() - start_time
       overtimed = timer > timemax_ns
-      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %.2fs\n", iter, rNorm, ktimer(start_time))
+      kdisplay(iter, verbose) && @printf(iostream, "%5d  %8.1e  %7.1e  %.2fs\n", iter, αₖ, rNorm, start_time |> ktimer)
     end
     (verbose > 0) && @printf(iostream, "\n")
 
@@ -369,15 +384,19 @@ kwargs_qmr = (:c, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback,
     overtimed           && (status = "time limit exceeded")
 
     # Update x
-    warm_start && @kaxpy!(n, one(FC), Δx, x)
-    solver.warm_start = false
+    if !NisI
+      copyto!(workspace.s, x)
+      mulorldiv!(x, N, workspace.s, ldiv)
+    end
+    warm_start && kaxpy!(n, one(FC), Δx, x)
+    workspace.warm_start = false
 
     # Update stats
     stats.niter = iter
     stats.solved = solved
     stats.inconsistent = false
-    stats.timer = ktimer(start_time)
+    stats.timer = start_time |> ktimer
     stats.status = status
-    return solver
+    return workspace
   end
 end

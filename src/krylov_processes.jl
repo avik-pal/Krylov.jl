@@ -1,25 +1,33 @@
-export hermitian_lanczos, nonhermitian_lanczos, arnoldi, golub_kahan, saunders_simon_yip, montoison_orban
+export hermitian_lanczos, nonhermitian_lanczos, arnoldi, golub_kahan, saunders_simon_yip, montoison_orban, bunse_gerstner_stover
 
 """
-    V, β, T = hermitian_lanczos(A, b, k)
+    V, β, T = hermitian_lanczos(A, b, k; allow_breakdown=false, reorthogonalization=false, skew_hermitian=false)
 
 #### Input arguments
 
-* `A`: a linear operator that models an Hermitian matrix of dimension n;
-* `b`: a vector of length n;
+* `A`: a linear operator that models a Hermitian or skew-Hermitian matrix of dimension `n`;
+* `b`: a vector of length `n`;
 * `k`: the number of iterations of the Hermitian Lanczos process.
+
+#### Keyword arguments
+
+* `allow_breakdown`: specify whether to continue the process or raise an error when an exact breakdown occurs;
+* `reorthogonalization`: reorthogonalize each newly added vector of the Krylov basis against only the two previous vectors (local reorthogonalization);
+* `skew_hermitian`: specify whether `A` is Hermitian or skew-Hermitian.
 
 #### Output arguments
 
-* `V`: a dense n × (k+1) matrix;
-* `β`: a coefficient such that βv₁ = b;
-* `T`: a sparse (k+1) × k tridiagonal matrix.
+* `V`: a dense `n × (k+1)` matrix;
+* `β`: a coefficient such that `βv₁ = b`;
+* `T`: a sparse `(k+1) × k` tridiagonal matrix.
 
-#### Reference
+#### References
 
 * C. Lanczos, [*An Iteration Method for the Solution of the Eigenvalue Problem of Linear Differential and Integral Operators*](https://doi.org/10.6028/jres.045.026), Journal of Research of the National Bureau of Standards, 45(4), pp. 225--280, 1950.
+* H. D. Simon, [*The Lanczos algorithm with partial reorthogonalization*](https://doi.org/10.1090/S0025-5718-1984-0725988-X), Mathematics of computation, 42(165), pp. 115--142, 1984.
 """
-function hermitian_lanczos(A, b::AbstractVector{FC}, k::Int) where FC <: FloatOrComplex
+function hermitian_lanczos(A, b::AbstractVector{FC}, k::Int;
+                           allow_breakdown::Bool=false, reorthogonalization::Bool=false, skew_hermitian::Bool=false) where FC <: FloatOrComplex
   m, n = size(A)
   R = real(FC)
   S = ktypeof(b)
@@ -27,7 +35,7 @@ function hermitian_lanczos(A, b::AbstractVector{FC}, k::Int) where FC <: FloatOr
 
   colptr = zeros(Int, k+1)
   rowval = zeros(Int, 3k-1)
-  nzval = zeros(R, 3k-1)
+  nzval = zeros(FC, 3k-1)
 
   colptr[1] = 1
   for i = 1:k
@@ -52,51 +60,111 @@ function hermitian_lanczos(A, b::AbstractVector{FC}, k::Int) where FC <: FloatOr
     vᵢ = view(V,:,i)
     vᵢ₊₁ = q = view(V,:,i+1)
     if i == 1
-      β₁ = @knrm2(n, b)
-      vᵢ .= b ./ β₁
+      β₁ = knorm(n, b)
+      if β₁ == 0
+        !allow_breakdown && error("Exact breakdown β₁ == 0.")
+        kfill!(vᵢ, zero(FC))
+      else
+        kdivcopy!(n, vᵢ, b, β₁)
+      end
     end
-    mul!(q, A, vᵢ)
+    kmul!(q, A, vᵢ)
     if i ≥ 2
       vᵢ₋₁ = view(V,:,i-1)
-      βᵢ = nzval[pαᵢ-2]  # βᵢ = Tᵢ.ᵢ₋₁
+      if skew_hermitian
+        βᵢ = -nzval[pαᵢ-2]  # βᵢ = -Tᵢ.ᵢ₋₁
+      else
+        βᵢ = nzval[pαᵢ-2]  # βᵢ = Tᵢ.ᵢ₋₁
+      end
       nzval[pαᵢ-1] = βᵢ  # Tᵢ₋₁.ᵢ = βᵢ
-      @kaxpy!(n, -βᵢ, vᵢ₋₁, q)
+      kaxpy!(n, -βᵢ, vᵢ₋₁, q)
     end
-    αᵢ = @kdotr(n, vᵢ, q)
+    αᵢ = zero(FC)
+    if !skew_hermitian
+      αᵢ = kdotr(n, vᵢ, q)
+      kaxpy!(n, -αᵢ, vᵢ, q)
+    else
+      if FC <: Complex
+        αᵢ = kdoti(n, vᵢ, q)
+        kaxpy!(n, -αᵢ, vᵢ, q)
+      end
+    end
+    if reorthogonalization
+      if i ≥ 2
+        vᵢ₋₁ = view(V,:,i-1)
+        βtmp = kdotr(n, vᵢ₋₁, q)
+        if skew_hermitian
+          nzval[pαᵢ-2] -= βtmp
+        else
+          nzval[pαᵢ-2] += βtmp
+        end
+        nzval[pαᵢ-1] += βtmp
+        kaxpy!(n, -βtmp, vᵢ₋₁, q)
+      end
+      if !skew_hermitian
+        αtmp = kdotr(n, vᵢ, q)
+        αᵢ += αtmp
+        kaxpy!(n, -αtmp, vᵢ, q)
+      else
+        if FC <: Complex
+          αtmp = kdoti(n, vᵢ, q)
+          αᵢ += αtmp
+          kaxpy!(n, -αtmp, vᵢ, q)
+        end
+      end
+    end
     nzval[pαᵢ] = αᵢ  # Tᵢ.ᵢ = αᵢ
-    @kaxpy!(n, -αᵢ, vᵢ, q)
-    βᵢ₊₁ = @knrm2(n, q)
-    nzval[pαᵢ+1] = βᵢ₊₁  # Tᵢ₊₁.ᵢ = βᵢ₊₁
-    vᵢ₊₁ .= q ./ βᵢ₊₁
+    βᵢ₊₁ = knorm(n, q)
+    if βᵢ₊₁ == 0
+      !allow_breakdown && error("Exact breakdown βᵢ₊₁ == 0 at iteration i = $i.")
+      kfill!(vᵢ₊₁, zero(FC))
+    else
+      if skew_hermitian
+        kdivcopy!(n, vᵢ₊₁, q, -βᵢ₊₁)
+      else
+        kdivcopy!(n, vᵢ₊₁, q, βᵢ₊₁)
+      end
+    end
+    if skew_hermitian
+      nzval[pαᵢ+1] = -βᵢ₊₁  # Tᵢ₊₁.ᵢ = -βᵢ₊₁
+    else
+      nzval[pαᵢ+1] = βᵢ₊₁  # Tᵢ₊₁.ᵢ = βᵢ₊₁
+    end
     pαᵢ = pαᵢ + 3
   end
   return V, β₁, T
 end
 
 """
-    V, β, T, U, γᴴ, Tᴴ = nonhermitian_lanczos(A, b, c, k)
+    V, β, T, U, γᴴ, Tᴴ = nonhermitian_lanczos(A, b, c, k; allow_breakdown=false)
 
 #### Input arguments
 
-* `A`: a linear operator that models a square matrix of dimension n;
-* `b`: a vector of length n;
-* `c`: a vector of length n;
+* `A`: a linear operator that models a square matrix of dimension `n`;
+* `b`: a vector of length `n`;
+* `c`: a vector of length `n`;
 * `k`: the number of iterations of the non-Hermitian Lanczos process.
+
+#### Keyword argument
+
+* `allow_breakdown`: specify whether to continue the process or raise an error when an exact breakdown occurs.
 
 #### Output arguments
 
-* `V`: a dense n × (k+1) matrix;
-* `β`: a coefficient such that βv₁ = b;
-* `T`: a sparse (k+1) × k tridiagonal matrix;
-* `U`: a dense n × (k+1) matrix;
-* `γᴴ`: a coefficient such that γᴴu₁ = c;
-* `Tᴴ`: a sparse (k+1) × k tridiagonal matrix.
+* `V`: a dense `n × (k+1)` matrix;
+* `β`: a coefficient such that `βv₁ = b`;
+* `T`: a sparse `(k+1) × k` tridiagonal matrix;
+* `U`: a dense `n × (k+1)` matrix;
+* `γᴴ`: a coefficient such that `γᴴu₁ = c`;
+* `Tᴴ`: a sparse `(k+1) × k` tridiagonal matrix.
 
-#### Reference
+#### References
 
 * C. Lanczos, [*An Iteration Method for the Solution of the Eigenvalue Problem of Linear Differential and Integral Operators*](https://doi.org/10.6028/jres.045.026), Journal of Research of the National Bureau of Standards, 45(4), pp. 225--280, 1950.
+* H. I. van der Veen and K. Vuik, [*Bi-Lanczos with partial orthogonalization*](https://doi.org/10.1016/0045-7949(94)00565-K), Computers & structures, 56(4), pp. 605--613, 1995.
 """
-function nonhermitian_lanczos(A, b::AbstractVector{FC}, c::AbstractVector{FC}, k::Int) where FC <: FloatOrComplex
+function nonhermitian_lanczos(A, b::AbstractVector{FC}, c::AbstractVector{FC}, k::Int;
+                              allow_breakdown::Bool=false) where FC <: FloatOrComplex
   m, n = size(A)
   Aᴴ = A'
   R = real(FC)
@@ -135,32 +203,48 @@ function nonhermitian_lanczos(A, b::AbstractVector{FC}, c::AbstractVector{FC}, k
     vᵢ₊₁ = q = view(V,:,i+1)
     uᵢ₊₁ = p = view(U,:,i+1)
     if i == 1
-      cᴴb = @kdot(n, c, b)
-      β₁ = √(abs(cᴴb))
-      γ₁ᴴ = conj(cᴴb / β₁)
-      vᵢ .= b ./ β₁
-      uᵢ .= c ./ γ₁ᴴ
+      cᴴb = kdot(n, c, b)
+      if cᴴb == 0
+        !allow_breakdown && error("Exact breakdown β₁γ₁ == 0.")
+        βᵢ₊₁ = zero(FC)
+        γᵢ₊₁ = zero(FC)
+        kfill!(vᵢ₊₁, zero(FC))
+        kfill!(uᵢ₊₁, zero(FC))
+      else
+        β₁ = √(abs(cᴴb))
+        γ₁ᴴ = conj(cᴴb / β₁)
+        kdivcopy!(n, vᵢ, b, β₁)
+        kdivcopy!(n, uᵢ, c, γ₁ᴴ)
+      end
     end
-    mul!(q, A , vᵢ)
-    mul!(p, Aᴴ, uᵢ)
+    kmul!(q, A , vᵢ)
+    kmul!(p, Aᴴ, uᵢ)
     if i ≥ 2
       vᵢ₋₁ = view(V,:,i-1)
       uᵢ₋₁ = view(U,:,i-1)
       βᵢ = nzval_T[pαᵢ-2]  # βᵢ = Tᵢ.ᵢ₋₁
       γᵢ = nzval_T[pαᵢ-1]  # γᵢ = Tᵢ₋₁.ᵢ
-      @kaxpy!(n, -     γᵢ , vᵢ₋₁, q)
-      @kaxpy!(n, -conj(βᵢ), uᵢ₋₁, p)
+      kaxpy!(n, -     γᵢ , vᵢ₋₁, q)
+      kaxpy!(n, -conj(βᵢ), uᵢ₋₁, p)
     end
-    αᵢ = @kdot(n, uᵢ, q)
+    αᵢ = kdot(n, uᵢ, q)
     nzval_T[pαᵢ]  = αᵢ        # Tᵢ.ᵢ  = αᵢ
     nzval_Tᴴ[pαᵢ] = conj(αᵢ)  # Tᴴᵢ.ᵢ = ᾱᵢ
-    @kaxpy!(m, -     αᵢ , vᵢ, q)
-    @kaxpy!(n, -conj(αᵢ), uᵢ, p)
-    pᴴq = @kdot(n, p, q)
-    βᵢ₊₁ = √(abs(pᴴq))
-    γᵢ₊₁ = pᴴq / βᵢ₊₁
-    vᵢ₊₁ .= q ./ βᵢ₊₁
-    uᵢ₊₁ .= p ./ conj(γᵢ₊₁)
+    kaxpy!(n, -     αᵢ , vᵢ, q)
+    kaxpy!(n, -conj(αᵢ), uᵢ, p)
+    pᴴq = kdot(n, p, q)
+    if pᴴq == 0
+      !allow_breakdown && error("Exact breakdown βᵢ₊₁γᵢ₊₁ == 0 at iteration i = $i.")
+      βᵢ₊₁ = zero(FC)
+      γᵢ₊₁ = zero(FC)
+      kfill!(vᵢ₊₁, zero(FC))
+      kfill!(uᵢ₊₁, zero(FC))
+    else
+      βᵢ₊₁ = √(abs(pᴴq))
+      γᵢ₊₁ = pᴴq / βᵢ₊₁
+      kdivcopy!(n, vᵢ₊₁, q, βᵢ₊₁)
+      kdivcopy!(n, uᵢ₊₁, p, conj(γᵢ₊₁))
+    end
     nzval_T[pαᵢ+1]  = βᵢ₊₁        # Tᵢ₊₁.ᵢ  = βᵢ₊₁
     nzval_Tᴴ[pαᵢ+1] = conj(γᵢ₊₁)  # Tᴴᵢ₊₁.ᵢ = γ̄ᵢ₊₁
     if i ≤ k-1
@@ -173,29 +257,31 @@ function nonhermitian_lanczos(A, b::AbstractVector{FC}, c::AbstractVector{FC}, k
 end
 
 """
-    V, β, H = arnoldi(A, b, k; reorthogonalization=false)
+    V, β, H = arnoldi(A, b, k; allow_breakdown=false, reorthogonalization=false)
 
 #### Input arguments
 
-* `A`: a linear operator that models a square matrix of dimension n;
-* `b`: a vector of length n;
+* `A`: a linear operator that models a square matrix of dimension `n`;
+* `b`: a vector of length `n`;
 * `k`: the number of iterations of the Arnoldi process.
 
-#### Keyword argument
+#### Keyword arguments
 
-* `reorthogonalization`: reorthogonalize the new vectors of the Krylov basis against all previous vectors.
+* `allow_breakdown`: specify whether to continue the process or raise an error when an exact breakdown occurs;
+* `reorthogonalization`: reorthogonalize each newly added vector of the Krylov basis against all previous vectors (full reorthogonalization).
 
 #### Output arguments
 
-* `V`: a dense n × (k+1) matrix;
-* `β`: a coefficient such that βv₁ = b;
-* `H`: a dense (k+1) × k upper Hessenberg matrix.
+* `V`: a dense `n × (k+1)` matrix;
+* `β`: a coefficient such that `βv₁ = b`;
+* `H`: a dense `(k+1) × k` upper Hessenberg matrix.
 
 #### Reference
 
 * W. E. Arnoldi, [*The principle of minimized iterations in the solution of the matrix eigenvalue problem*](https://doi.org/10.1090/qam/42792), Quarterly of Applied Mathematics, 9, pp. 17--29, 1951.
 """
-function arnoldi(A, b::AbstractVector{FC}, k::Int; reorthogonalization::Bool=false) where FC <: FloatOrComplex
+function arnoldi(A, b::AbstractVector{FC}, k::Int;
+                 allow_breakdown::Bool=false, reorthogonalization::Bool=false) where FC <: FloatOrComplex
   m, n = size(A)
   R = real(FC)
   S = ktypeof(b)
@@ -209,51 +295,66 @@ function arnoldi(A, b::AbstractVector{FC}, k::Int; reorthogonalization::Bool=fal
     vⱼ = view(V,:,j)
     vⱼ₊₁ = q = view(V,:,j+1)
     if j == 1
-      β = @knrm2(n, b)
-      vⱼ .= b ./ β
+      β = knorm(n, b)
+      if β == 0
+        !allow_breakdown && error("Exact breakdown β == 0.")
+        kfill!(vⱼ, zero(FC))
+      else
+        kdivcopy!(n, vⱼ, b, β)
+      end
     end
-    mul!(q, A, vⱼ)
+    kmul!(q, A, vⱼ)
     for i = 1:j
       vᵢ = view(V,:,i)
-      H[i,j] = @kdot(n, vᵢ, q)
-      @kaxpy!(n, -H[i,j], vᵢ, q)
+      H[i,j] = kdot(n, vᵢ, q)
+      kaxpy!(n, -H[i,j], vᵢ, q)
     end
     if reorthogonalization
       for i = 1:j
         vᵢ = view(V,:,i)
-        Htmp = @kdot(n, vᵢ, q)
-        @kaxpy!(n, -Htmp, vᵢ, q)
+        Htmp = kdot(n, vᵢ, q)
+        kaxpy!(n, -Htmp, vᵢ, q)
         H[i,j] += Htmp
       end
     end
-    H[j+1,j] = @knrm2(n, q)
-    vⱼ₊₁ .= q ./ H[j+1,j]
+    H[j+1,j] = knorm(n, q)
+    if H[j+1,j] == 0
+      !allow_breakdown && error("Exact breakdown Hᵢ₊₁.ᵢ == 0 at iteration i = $j.")
+      kfill!(vⱼ₊₁, zero(FC))
+    else
+      kdivcopy!(n, vⱼ₊₁, q, H[j+1,j])
+    end
   end
   return V, β, H
 end
 
 """
-    V, U, β, L = golub_kahan(A, b, k)
+    V, U, β, L = golub_kahan(A, b, k; allow_breakdown=false)
 
 #### Input arguments
 
-* `A`: a linear operator that models a matrix of dimension m × n;
-* `b`: a vector of length m;
+* `A`: a linear operator that models a matrix of dimension `m × n`;
+* `b`: a vector of length `m`;
 * `k`: the number of iterations of the Golub-Kahan process.
+
+#### Keyword argument
+
+* `allow_breakdown`: specify whether to continue the process or raise an error when an exact breakdown occurs.
 
 #### Output arguments
 
-* `V`: a dense n × (k+1) matrix;
-* `U`: a dense m × (k+1) matrix;
-* `β`: a coefficient such that βu₁ = b;
-* `L`: a sparse (k+1) × (k+1) lower bidiagonal matrix.
+* `V`: a dense `n × (k+1)` matrix;
+* `U`: a dense `m × (k+1)` matrix;
+* `β`: a coefficient such that `βu₁ = b`;
+* `L`: a sparse `(k+1) × (k+1)` lower bidiagonal matrix.
 
 #### References
 
 * G. H. Golub and W. Kahan, [*Calculating the Singular Values and Pseudo-Inverse of a Matrix*](https://doi.org/10.1137/0702016), SIAM Journal on Numerical Analysis, 2(2), pp. 225--224, 1965.
 * C. C. Paige, [*Bidiagonalization of Matrices and Solution of Linear Equations*](https://doi.org/10.1137/0711019), SIAM Journal on Numerical Analysis, 11(1), pp. 197--209, 1974.
 """
-function golub_kahan(A, b::AbstractVector{FC}, k::Int) where FC <: FloatOrComplex
+function golub_kahan(A, b::AbstractVector{FC}, k::Int;
+                     allow_breakdown::Bool=false) where FC <: FloatOrComplex
   m, n = size(A)
   R = real(FC)
   Aᴴ = A'
@@ -290,22 +391,42 @@ function golub_kahan(A, b::AbstractVector{FC}, k::Int) where FC <: FloatOrComple
     vᵢ₊₁ = p = view(V,:,i+1)
     if i == 1
       wᵢ = vᵢ
-      β₁ = @knrm2(m, b)
-      uᵢ .= b ./ β₁
-      mul!(wᵢ, Aᴴ, uᵢ)
-      αᵢ = @knrm2(n, wᵢ)
+      β₁ = knorm(m, b)
+      if β₁ == 0
+        !allow_breakdown && error("Exact breakdown β₁ == 0.")
+        kfill!(uᵢ, zero(FC))
+      else
+        kdivcopy!(m, uᵢ, b, β₁)
+      end
+      kmul!(wᵢ, Aᴴ, uᵢ)
+      αᵢ = knorm(n, wᵢ)
+      if αᵢ == 0
+        !allow_breakdown && error("Exact breakdown α₁ == 0.")
+        kfill!(vᵢ, zero(FC))
+      else
+        kdivcopy!(n, vᵢ, wᵢ, αᵢ)
+      end
       nzval[pαᵢ] = αᵢ  # Lᵢ.ᵢ = αᵢ
-      vᵢ .= wᵢ ./ αᵢ
     end
-    mul!(q, A, vᵢ)
+    kmul!(q, A, vᵢ)
     αᵢ = nzval[pαᵢ]  # αᵢ = Lᵢ.ᵢ
-    @kaxpy!(m, -αᵢ, uᵢ, q)
-    βᵢ₊₁ = @knrm2(m, q)
-    uᵢ₊₁ .= q ./ βᵢ₊₁
-    mul!(p, Aᴴ, uᵢ₊₁)
-    @kaxpy!(n, -βᵢ₊₁, vᵢ, p)
-    αᵢ₊₁ = @knrm2(n, p)
-    vᵢ₊₁ .= p ./ αᵢ₊₁
+    kaxpy!(m, -αᵢ, uᵢ, q)
+    βᵢ₊₁ = knorm(m, q)
+    if βᵢ₊₁ == 0
+      !allow_breakdown && error("Exact breakdown βᵢ₊₁ == 0 at iteration i = $i.")
+      kfill!(uᵢ₊₁, zero(FC))
+    else
+      kdivcopy!(m, uᵢ₊₁, q, βᵢ₊₁)
+    end
+    kmul!(p, Aᴴ, uᵢ₊₁)
+    kaxpy!(n, -βᵢ₊₁, vᵢ, p)
+    αᵢ₊₁ = knorm(n, p)
+    if αᵢ₊₁ == 0
+      !allow_breakdown && error("Exact breakdown αᵢ₊₁ == 0 at iteration i = $i.")
+      kfill!(vᵢ₊₁, zero(FC))
+    else
+      kdivcopy!(n, vᵢ₊₁, p, αᵢ₊₁)
+    end
     nzval[pαᵢ+1] = βᵢ₊₁  # Lᵢ₊₁.ᵢ   = βᵢ₊₁
     nzval[pαᵢ+2] = αᵢ₊₁  # Lᵢ₊₁.ᵢ₊₁ = αᵢ₊₁
     pαᵢ = pαᵢ + 2
@@ -314,29 +435,34 @@ function golub_kahan(A, b::AbstractVector{FC}, k::Int) where FC <: FloatOrComple
 end
 
 """
-    V, β, T, U, γᴴ, Tᴴ = saunders_simon_yip(A, b, c, k)
+    V, β, T, U, γᴴ, Tᴴ = saunders_simon_yip(A, b, c, k; allow_breakdown=false)
 
 #### Input arguments
 
-* `A`: a linear operator that models a matrix of dimension m × n;
-* `b`: a vector of length m;
-* `c`: a vector of length n;
+* `A`: a linear operator that models a matrix of dimension `m × n`;
+* `b`: a vector of length `m`;
+* `c`: a vector of length `n`;
 * `k`: the number of iterations of the Saunders-Simon-Yip process.
+
+#### Keyword argument
+
+* `allow_breakdown`: specify whether to continue the process or raise an error when an exact breakdown occurs.
 
 #### Output arguments
 
-* `V`: a dense m × (k+1) matrix;
-* `β`: a coefficient such that βv₁ = b;
-* `T`: a sparse (k+1) × k tridiagonal matrix;
-* `U`: a dense n × (k+1) matrix;
-* `γᴴ`: a coefficient such that γᴴu₁ = c;
-* `Tᴴ`: a sparse (k+1) × k tridiagonal matrix.
+* `V`: a dense `m × (k+1)` matrix;
+* `β`: a coefficient such that `βv₁ = b`;
+* `T`: a sparse `(k+1) × k` tridiagonal matrix;
+* `U`: a dense `n × (k+1)` matrix;
+* `γᴴ`: a coefficient such that `γᴴu₁ = c`;
+* `Tᴴ`: a sparse `(k+1) × k` tridiagonal matrix.
 
 #### Reference
 
 * M. A. Saunders, H. D. Simon, and E. L. Yip, [*Two Conjugate-Gradient-Type Methods for Unsymmetric Linear Equations*](https://doi.org/10.1137/0725052), SIAM Journal on Numerical Analysis, 25(4), pp. 927--940, 1988.
 """
-function saunders_simon_yip(A, b::AbstractVector{FC}, c::AbstractVector{FC}, k::Int) where FC <: FloatOrComplex
+function saunders_simon_yip(A, b::AbstractVector{FC}, c::AbstractVector{FC}, k::Int;
+                            allow_breakdown::Bool=false) where FC <: FloatOrComplex
   m, n = size(A)
   Aᴴ = A'
   R = real(FC)
@@ -375,30 +501,50 @@ function saunders_simon_yip(A, b::AbstractVector{FC}, c::AbstractVector{FC}, k::
     vᵢ₊₁ = q = view(V,:,i+1)
     uᵢ₊₁ = p = view(U,:,i+1)
     if i == 1
-      β₁ = @knrm2(m, b)
-      γ₁ᴴ = @knrm2(n, c)
-      vᵢ .= b ./ β₁
-      uᵢ .= c ./ γ₁ᴴ
+      β₁ = knorm(m, b)
+      if β₁ == 0
+        !allow_breakdown && error("Exact breakdown β₁ == 0.")
+        kfill!(vᵢ, zero(FC))
+      else
+        kdivcopy!(m, vᵢ, b, β₁)
+      end
+      γ₁ᴴ = knorm(n, c)
+      if γ₁ᴴ == 0
+        !allow_breakdown && error("Exact breakdown γ₁ᴴ == 0.")
+        kfill!(uᵢ, zero(FC))
+      else
+        kdivcopy!(n, uᵢ, c, γ₁ᴴ)
+      end
     end
-    mul!(q, A , uᵢ)
-    mul!(p, Aᴴ, vᵢ)
+    kmul!(q, A , uᵢ)
+    kmul!(p, Aᴴ, vᵢ)
     if i ≥ 2
       vᵢ₋₁ = view(V,:,i-1)
       uᵢ₋₁ = view(U,:,i-1)
       βᵢ = nzval_T[pαᵢ-2]  # βᵢ = Tᵢ.ᵢ₋₁
       γᵢ = nzval_T[pαᵢ-1]  # γᵢ = Tᵢ₋₁.ᵢ
-      @kaxpy!(m, -γᵢ, vᵢ₋₁, q)
-      @kaxpy!(n, -βᵢ, uᵢ₋₁, p)
+      kaxpy!(m, -γᵢ, vᵢ₋₁, q)
+      kaxpy!(n, -βᵢ, uᵢ₋₁, p)
     end
-    αᵢ = @kdot(m, vᵢ, q)
+    αᵢ = kdot(m, vᵢ, q)
     nzval_T[pαᵢ]  = αᵢ        # Tᵢ.ᵢ  = αᵢ
     nzval_Tᴴ[pαᵢ] = conj(αᵢ)  # Tᴴᵢ.ᵢ = ᾱᵢ
-    @kaxpy!(m, -     αᵢ , vᵢ, q)
-    @kaxpy!(n, -conj(αᵢ), uᵢ, p)
-    βᵢ₊₁ = @knrm2(m, q)
-    γᵢ₊₁ = @knrm2(n, p)
-    vᵢ₊₁ .= q ./ βᵢ₊₁
-    uᵢ₊₁ .= p ./ γᵢ₊₁
+    kaxpy!(m, -     αᵢ , vᵢ, q)
+    kaxpy!(n, -conj(αᵢ), uᵢ, p)
+    βᵢ₊₁ = knorm(m, q)
+    if βᵢ₊₁ == 0
+      !allow_breakdown && error("Exact breakdown βᵢ₊₁ == 0 at iteration i = $i.")
+      kfill!(vᵢ₊₁, zero(FC))
+    else
+      kdivcopy!(m, vᵢ₊₁, q, βᵢ₊₁)
+    end
+    γᵢ₊₁ = knorm(n, p)
+    if γᵢ₊₁ == 0
+      !allow_breakdown && error("Exact breakdown γᵢ₊₁ == 0 at iteration i = $i.")
+      kfill!(uᵢ₊₁, zero(FC))
+    else
+      kdivcopy!(n, uᵢ₊₁, p, γᵢ₊₁)
+    end
     nzval_T[pαᵢ+1]  = βᵢ₊₁  # Tᵢ₊₁.ᵢ  = βᵢ₊₁
     nzval_Tᴴ[pαᵢ+1] = γᵢ₊₁  # Tᴴᵢ₊₁.ᵢ = γᵢ₊₁
     if i ≤ k-1
@@ -411,34 +557,36 @@ function saunders_simon_yip(A, b::AbstractVector{FC}, c::AbstractVector{FC}, k::
 end
 
 """
-    V, β, H, U, γ, F = montoison_orban(A, B, b, c, k; reorthogonalization=false)
+    V, β, H, U, γ, F = montoison_orban(A, B, b, c, k; allow_breakdown=false, reorthogonalization=false)
 
 #### Input arguments
 
-* `A`: a linear operator that models a matrix of dimension m × n;
-* `B`: a linear operator that models a matrix of dimension n × m;
-* `b`: a vector of length m;
-* `c`: a vector of length n;
+* `A`: a linear operator that models a matrix of dimension `m × n`;
+* `B`: a linear operator that models a matrix of dimension `n × m`;
+* `b`: a vector of length `m`;
+* `c`: a vector of length `n`;
 * `k`: the number of iterations of the Montoison-Orban process.
 
-#### Keyword argument
+#### Keyword arguments
 
-* `reorthogonalization`: reorthogonalize the new vectors of the Krylov basis against all previous vectors.
+* `allow_breakdown`: specify whether to continue the process or raise an error when an exact breakdown occurs;
+* `reorthogonalization`: reorthogonalize each newly added vector of the Krylov basis against all previous vectors (full reorthogonalization).
 
 #### Output arguments
 
-* `V`: a dense m × (k+1) matrix;
-* `β`: a coefficient such that βv₁ = b;
-* `H`: a dense (k+1) × k upper Hessenberg matrix;
-* `U`: a dense n × (k+1) matrix;
-* `γ`: a coefficient such that γu₁ = c;
-* `F`: a dense (k+1) × k upper Hessenberg matrix.
+* `V`: a dense `m × (k+1)` matrix;
+* `β`: a coefficient such that `βv₁ = b`;
+* `H`: a dense `(k+1) × k` upper Hessenberg matrix;
+* `U`: a dense `n × (k+1)` matrix;
+* `γ`: a coefficient such that `γu₁ = c`;
+* `F`: a dense `(k+1) × k` upper Hessenberg matrix.
 
 #### Reference
 
 * A. Montoison and D. Orban, [*GPMR: An Iterative Method for Unsymmetric Partitioned Linear Systems*](https://doi.org/10.1137/21M1459265), SIAM Journal on Matrix Analysis and Applications, 44(1), pp. 293--311, 2023.
 """
-function montoison_orban(A, B, b::AbstractVector{FC}, c::AbstractVector{FC}, k::Int; reorthogonalization::Bool=false) where FC <: FloatOrComplex
+function montoison_orban(A, B, b::AbstractVector{FC}, c::AbstractVector{FC}, k::Int;
+                         allow_breakdown::Bool=false, reorthogonalization::Bool=false) where FC <: FloatOrComplex
   m, n = size(A)
   R = real(FC)
   S = ktypeof(b)
@@ -456,37 +604,184 @@ function montoison_orban(A, B, b::AbstractVector{FC}, c::AbstractVector{FC}, k::
     vⱼ₊₁ = q = view(V,:,j+1)
     uⱼ₊₁ = p = view(U,:,j+1)
     if j == 1
-      β = @knrm2(m, b)
-      γ = @knrm2(n, c)
-      vⱼ .= b ./ β
-      uⱼ .= c ./ γ
+      β = knorm(m, b)
+      if β == 0
+        !allow_breakdown && error("Exact breakdown β == 0.")
+        kfill!(vⱼ, zero(FC))
+      else
+        kdivcopy!(m, vⱼ, b, β)
+      end
+      γ = knorm(n, c)
+      if γ == 0
+        !allow_breakdown && error("Exact breakdown γ == 0.")
+        kfill!(uⱼ, zero(FC))
+      else
+        kdivcopy!(n, uⱼ, c, γ)
+      end
     end
-    mul!(q, A, uⱼ)
-    mul!(p, B, vⱼ)
+    kmul!(q, A, uⱼ)
+    kmul!(p, B, vⱼ)
     for i = 1:j
       vᵢ = view(V,:,i)
       uᵢ = view(U,:,i)
-      H[i,j] = @kdot(m, vᵢ, q)
-      @kaxpy!(n, -H[i,j], vᵢ, q)
-      F[i,j] = @kdot(n, uᵢ, p)
-      @kaxpy!(m, -F[i,j], uᵢ, p)
+      H[i,j] = kdot(m, vᵢ, q)
+      kaxpy!(n, -H[i,j], vᵢ, q)
+      F[i,j] = kdot(n, uᵢ, p)
+      kaxpy!(m, -F[i,j], uᵢ, p)
     end
     if reorthogonalization
       for i = 1:j
         vᵢ = view(V,:,i)
         uᵢ = view(U,:,i)
-        Htmp = @kdot(m, vᵢ, q)
-        @kaxpy!(m, -Htmp, vᵢ, q)
+        Htmp = kdot(m, vᵢ, q)
+        kaxpy!(m, -Htmp, vᵢ, q)
         H[i,j] += Htmp
-        Ftmp = @kdot(n, uᵢ, p)
-        @kaxpy!(n, -Ftmp, uᵢ, p)
+        Ftmp = kdot(n, uᵢ, p)
+        kaxpy!(n, -Ftmp, uᵢ, p)
         F[i,j] += Ftmp
       end
     end
-    H[j+1,j] = @knrm2(m, q)
-    vⱼ₊₁ .= q ./ H[j+1,j]
-    F[j+1,j] = @knrm2(n, p)
-    uⱼ₊₁ .= p ./ F[j+1,j]
+    H[j+1,j] = knorm(m, q)
+    if H[j+1,j] == 0
+      !allow_breakdown && error("Exact breakdown Hᵢ₊₁.ᵢ == 0 at iteration i = $j.")
+      kfill!(vⱼ₊₁, zero(FC))
+    else
+      kdivcopy!(m, vⱼ₊₁, q, H[j+1,j])
+    end
+    F[j+1,j] = knorm(n, p)
+    if F[j+1,j] == 0
+      !allow_breakdown && error("Exact breakdown Fᵢ₊₁.ᵢ == 0 at iteration i = $j.")
+      kfill!(uⱼ₊₁, zero(FC))
+    else
+      kdivcopy!(n, uⱼ₊₁, p, F[j+1,j])
+    end
   end
   return V, β, H, U, γ, F
+end
+
+"""
+    V, β, T = bunse_gerstner_stover(A, b, k; allow_breakdown=false, reorthogonalization=false, skew_symmetric=false)
+
+#### Input arguments
+
+* `A`: a linear operator that models a symmetric or skew-symmetric matrix of dimension `n`;
+* `b`: a vector of length `n`;
+* `k`: the number of iterations of the Bunse-Gerstner-Stöver process.
+
+#### Keyword arguments
+
+* `allow_breakdown`: specify whether to continue the process or raise an error when an exact breakdown occurs;
+* `reorthogonalization`: reorthogonalize each newly added vector of the Krylov basis against only the two previous vectors (local reorthogonalization);
+* `skew_symmetric`: specify whether `A` is symmetric or skew-symmetric.
+
+#### Output arguments
+
+* `V`: a dense `n × (k+1)` matrix;
+* `β`: a coefficient such that `βv₁ = b`;
+* `T`: a sparse `(k+1) × k` tridiagonal matrix.
+
+#### References
+
+* T. Takagi, [*On an algebraic problem related to an analytic theorem of Carathéodory and Fejér and on an allied theorem of Landau*](https://doi.org/10.4099/jjm1924.1.0_83), Japanese Journal of Mathematics, 1, pp. 83--93, 1924.
+* A. Bunse-Gerstner and W. B. Gragg, [*Singular value decompositions of complex symmetric matrices*](https://doi.org/10.1016/0377-0427(88)90386-X), Journal of Computational and Applied Mathematics, 21(1), pp. 41--54, 1988.
+* A. Bunse-Gerstner and R. Stöver, [*On a conjugate gradient-type method for solving complex symmetric linear systems*](https://doi.org/10.1016/S0024-3795(98)10091-5), Linear Algebra and its Applications, 287(1--3), pp. 105--123, 1999.
+"""
+function bunse_gerstner_stover(A, b::AbstractVector{FC}, k::Int;
+                               allow_breakdown::Bool=false, reorthogonalization::Bool=false, skew_symmetric::Bool=false) where FC <: FloatOrComplex
+  m, n = size(A)
+  R = real(FC)
+  S = ktypeof(b)
+  M = vector_to_matrix(S)
+
+  colptr = zeros(Int, k+1)
+  rowval = zeros(Int, 3k-1)
+  nzval = zeros(FC, 3k-1)
+
+  colptr[1] = 1
+  for i = 1:k
+    pos = colptr[i]
+    colptr[i+1] = 3i
+    if i == 1
+      rowval[pos] = i
+      rowval[pos+1] = i+1
+    else
+      rowval[pos] = i-1
+      rowval[pos+1] = i
+      rowval[pos+2] = i+1
+    end
+  end
+
+  β₁ = zero(R)
+  vbar = S(undef, n)
+  V = M(undef, n, k+1)
+  T = SparseMatrixCSC(k+1, k, colptr, rowval, nzval)
+
+  pαᵢ = 1  # Position of αᵢ in the vector `nzval`
+  for i = 1:k
+    vᵢ = view(V,:,i)
+    vᵢ₊₁ = q = view(V,:,i+1)
+    if i == 1
+      β₁ = knorm(n, b)
+      if β₁ == 0
+        !allow_breakdown && error("Exact breakdown β₁ == 0.")
+        kfill!(vᵢ, zero(FC))
+      else
+        kdivcopy!(n, vᵢ, b, β₁)
+      end
+    end
+    vbar .= conj.(vᵢ)
+    kmul!(q, A, vbar)
+    if i ≥ 2
+      vᵢ₋₁ = view(V,:,i-1)
+      if skew_symmetric
+        βᵢ = -nzval[pαᵢ-2]  # βᵢ = -Tᵢ.ᵢ₋₁
+      else
+        βᵢ = nzval[pαᵢ-2]  # βᵢ = Tᵢ.ᵢ₋₁
+      end
+      nzval[pαᵢ-1] = βᵢ  # Tᵢ₋₁.ᵢ = βᵢ
+      kaxpy!(n, -βᵢ, vᵢ₋₁, q)
+    end
+    αᵢ = zero(FC)
+    if !skew_symmetric
+      αᵢ = kdot(n, vᵢ, q)
+      kaxpy!(n, -αᵢ, vᵢ, q)
+    end
+    if reorthogonalization
+      if i ≥ 2
+        vᵢ₋₁ = view(V,:,i-1)
+        βtmp = kdotr(n, vᵢ₋₁, q)
+        if skew_symmetric
+          nzval[pαᵢ-2] -= βtmp
+        else
+          nzval[pαᵢ-2] += βtmp
+        end
+        nzval[pαᵢ-1] += βtmp
+        kaxpy!(n, -βtmp, vᵢ₋₁, q)
+      end
+      if !skew_symmetric
+        αtmp = kdot(n, vᵢ, q)
+        αᵢ += αtmp
+        kaxpy!(n, -αtmp, vᵢ, q)
+      end
+    end
+    nzval[pαᵢ] = αᵢ  # Tᵢ.ᵢ = αᵢ
+    βᵢ₊₁ = knorm(n, q)
+    if βᵢ₊₁ == 0
+      !allow_breakdown && error("Exact breakdown βᵢ₊₁ == 0 at iteration i = $i.")
+      kfill!(vᵢ₊₁, zero(FC))
+    else
+      if skew_symmetric
+        kdivcopy!(n, vᵢ₊₁, q, -βᵢ₊₁)
+      else
+        kdivcopy!(n, vᵢ₊₁, q, βᵢ₊₁)
+      end
+    end
+    if skew_symmetric
+      nzval[pαᵢ+1] = -βᵢ₊₁  # Tᵢ₊₁.ᵢ = -βᵢ₊₁
+    else
+      nzval[pαᵢ+1] = βᵢ₊₁  # Tᵢ₊₁.ᵢ = βᵢ₊₁
+    end
+    pαᵢ = pαᵢ + 3
+  end
+  return V, β₁, T
 end

@@ -1,61 +1,88 @@
-## In-place methods
+## [In-place methods](@id in-place)
 
 All solvers in Krylov.jl have an in-place variant implemented in a method whose name ends with `!`.
-A workspace (`KrylovSolver`) that contains the storage needed by a Krylov method can be used to solve multiple linear systems that have the same dimensions in the same floating-point precision.
-Each `KrylovSolver` has two constructors:
+A workspace (`KrylovWorkspace` or `BlockKrylovWorkspace`), which contains the storage needed by a Krylov method, can be used to solve multiple linear systems with the same dimensions and the same floating-point precision.
+It should also be the same number of right-hand sides in block Krylov methods.
+The section [storage requirements](@ref storage-requirements) specifies the memory needed for each Krylov method.
+
+Each `KrylovWorkspace` has at least three constructors with consistent argument patterns:
 
 ```@constructors
-XyzSolver(A, b)
-XyzSolver(m, n, S)
+XyzWorkspace(A, b)
+XyzWorkspace(m, n, S)
+XyzWorkspace(kc::KrylovConstructor)
+```
+The only exceptions are [`CgLanczosShiftWorkspace`](@ref) and [`CglsLanczosShiftWorkspace`](@ref), which require an additional argument `nshifts`.
+
+Depending on the method, some workspaces may also be constructed as:
+
+```@constructors_extended
+XyzWorkspace(A, b, c)
+XyzWorkspace(m, n, Sm, Sn)
 ```
 
-`Xyz` is the name of the Krylov method with lowercase letters except its first one (`Cg`, `Minres`, `Lsmr`, `Bicgstab`, ...).
-Given an operator `A` and a right-hand side `b`, you can create a `KrylovSolver` based on the size of `A` and the type of `b` or explicitly give the dimensions `(m, n)` and the storage type `S`.
+Additionally, some constructors accept keyword arguments.
+
+`Xyz` represents the name of the Krylov method, written in lowercase except for its first letter (such as `Cg`, `Minres`, `Lsmr` or `Bicgstab`).
+If the name of the Krylov method contains an underscore (e.g., `minres_qlp` or `cgls_lanczos_shift`), the workspace constructor transforms it by capitalizing each word and removing underscores, resulting in names like `MinresQlpWorkspace` or `CglsLanczosShiftWorkspace`.
+
+Given an operator `A` and a right-hand side `b`, you can create a `KrylovWorkspace` based on the size of `A` and the type of `b`, or explicitly provide the dimensions `(m, n)` and the storage type `S`.
+
+We assume that `S(undef, 0)`, `S(undef, n)`, and `S(undef, m)` are well-defined for the storage type `S`.
+For more advanced vector types, workspaces can also be created with the help of a `KrylovConstructor`.
+```@docs
+KrylovConstructor
+```
+See the section [custom workspaces](@ref custom_workspaces) for an example where this constructor is the only applicable option.
 
 For example, use `S = Vector{Float64}` if you want to solve linear systems in double precision on the CPU and `S = CuVector{Float32}` if you want to solve linear systems in single precision on an Nvidia GPU.
-
-!!! note
-    `DiomSolver`, `FomSolver`, `DqgmresSolver`, `GmresSolver`, `BlockGmresSolver`, `FgmresSolver`, `GpmrSolver` and `CgLanczosShiftSolver` require an additional argument (`memory` or `nshifts`).
 
 The workspace is always the first argument of the in-place methods:
 
 ```@solvers
-minres_solver = MinresSolver(n, n, Vector{Float64})
-minres!(minres_solver, A1, b1)
+minres_workspace = MinresWorkspace(m, n, Vector{Float64})
+minres!(minres_workspace, A1, b1)
 
-dqgmres_solver = DqgmresSolver(n, n, memory, Vector{BigFloat})
-dqgmres!(dqgmres_solver, A2, b2)
+bicgstab_workspace = BicgstabWorkspace(m, n, Vector{ComplexF64})
+bicgstab!(bicgstab_workspace, A2, b2)
 
-lsqr_solver = LsqrSolver(m, n, CuVector{Float32})
-lsqr!(lsqr_solver, A3, b3)
+gmres_workspace = GmresWorkspace(m, n, Vector{BigFloat})
+gmres!(gmres_workspace, A3, b3)
+
+lsqr_workspace = LsqrWorkspace(m, n, CuVector{Float32})
+lsqr!(lsqr_workspace, A4, b4)
 ```
 
-A generic function `solve!` is also available and dispatches to the appropriate Krylov method.
+## [Workspace accessors](@id workspace-accessors)
+
+In-place solvers update the workspace, from which solutions and statistics can be retrieved.
+The following functions are available for post-solve analysis.
+
+These functions are not exported and must be accessed using the prefix `Krylov.`, e.g. `Krylov.solution(workspace)`.
 
 ```@docs
-Krylov.solve!
-```
-
-In-place methods return an updated `solver` workspace.
-Solutions and statistics can be recovered via `solver.x`, `solver.y` and `solver.stats`.
-Functions `solution` and `statistics` can be also used.
-
-```@docs
-Krylov.nsolution
+Krylov.results
 Krylov.solution
 Krylov.statistics
+Krylov.elapsed_time
+Krylov.elapsed_allocation_time
 Krylov.issolved
+Krylov.solution_count
+Krylov.iteration_count
+Krylov.Aprod_count
+Krylov.Atprod_count
 ```
 
 ## Examples
 
 We illustrate the use of in-place Krylov solvers with two well-known optimization methods.
-The details of the optimization methods are described in the section about [Factorization-free operators](@ref factorization-free).
+The details of the optimization methods are described in the section about [Factorization-free operators](@ref matrix-free).
 
 ### Example 1: Newton's method for convex optimization without linesearch
 
 ```@newton
 using Krylov
+import Krylov: solution
 
 function newton(∇f, ∇²f, x₀; itmax = 200, tol = 1e-8)
 
@@ -65,18 +92,18 @@ function newton(∇f, ∇²f, x₀; itmax = 200, tol = 1e-8)
     
     iter = 0
     S = typeof(x)
-    solver = CgSolver(n, n, S)
-    Δx = solver.x
+    workspace = CgWorkspace(n, n, S)
 
     solved = false
     tired = false
 
     while !(solved || tired)
  
-        Hx = ∇²f(x)           # Compute ∇²f(xₖ)
-        cg!(solver, Hx, -gx)  # Solve ∇²f(xₖ)Δx = -∇f(xₖ)
-        x = x + Δx            # Update xₖ₊₁ = xₖ + Δx
-        gx = ∇f(x)            # ∇f(xₖ₊₁)
+        Hx = ∇²f(x)              # Compute ∇²f(xₖ)
+        cg!(workspace, Hx, -gx)  # Solve ∇²f(xₖ)Δx = -∇f(xₖ)
+        Δx = solution(workspace) # Recover Δx from the workspace
+        x = x + Δx               # Update xₖ₊₁ = xₖ + Δx
+        gx = ∇f(x)               # ∇f(xₖ₊₁)
         
         iter += 1
         solved = norm(gx) ≤ tol
@@ -90,6 +117,7 @@ end
 
 ```@gauss_newton
 using Krylov
+import Krylov: solution
 
 function gauss_newton(F, JF, x₀; itmax = 200, tol = 1e-8)
 
@@ -100,19 +128,19 @@ function gauss_newton(F, JF, x₀; itmax = 200, tol = 1e-8)
     
     iter = 0
     S = typeof(x)
-    solver = LsmrSolver(m, n, S)
-    Δx = solver.x
+    workspace = LsmrWorkspace(m, n, S)
 
     solved = false
     tired = false
 
     while !(solved || tired)
  
-        Jx = JF(x)              # Compute J(xₖ)
-        lsmr!(solver, Jx, -Fx)  # Minimize ‖J(xₖ)Δx + F(xₖ)‖
-        x = x + Δx              # Update xₖ₊₁ = xₖ + Δx
-        Fx_old = Fx             # F(xₖ)
-        Fx = F(x)               # F(xₖ₊₁)
+        Jx = JF(x)                 # Compute J(xₖ)
+        lsmr!(workspace, Jx, -Fx)  # Minimize ‖J(xₖ)Δx + F(xₖ)‖
+        Δx = solution(workspace)   # Recover Δx from the workspace
+        x = x + Δx                 # Update xₖ₊₁ = xₖ + Δx
+        Fx_old = Fx                # F(xₖ)
+        Fx = F(x)                  # F(xₖ₊₁)
         
         iter += 1
         solved = norm(Fx - Fx_old) / norm(Fx) ≤ tol

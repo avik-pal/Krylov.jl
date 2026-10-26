@@ -29,7 +29,7 @@
       A, b = zero_rhs(FC=FC)
       (x, stats) = lslq(A, b)
       @test norm(x) == 0
-      @test stats.status == "x = 0 is a zero-residual solution"
+      @test stats.status == "x is a zero-residual solution"
 
       for transfer_to_lsqr ∈ (false, true)
         # Test with smallest singular value estimate
@@ -93,17 +93,27 @@
           N⁻¹ = inv(N)
           (x_lq, stats) = lslq(A, b, M=M⁻¹, N=N⁻¹, sqd=true, transfer_to_lsqr=transfer_to_lsqr)
         end
+
+        # Test different types for input and output
+        A, b, c, D = small_sp(false, FC=FC)
+        workspace = LslqWorkspace(KrylovConstructor(TestVector(b), c))
+        lslq!(workspace, A, TestVector(b), M=inv(D), λ=1.0)
+        @test typeof(workspace.x) === typeof(c)
+        workspace = LslqWorkspace(KrylovConstructor(b, TestVector(c)))
+        lslq!(workspace, A, b, M=inv(D), λ=1.0)
+        @test typeof(workspace.x) === typeof(TestVector(c))
+
         # test callback function
         A, b, M = saddle_point(FC=FC)
         M⁻¹ = inv(M)
-        solver = LslqSolver(A, b)
+        workspace = LslqWorkspace(A, b)
         tol = 1.0e-1
         cb_n2 = TestCallbackN2LS(A, b, zero(eltype(b)), tol = tol)
-        lslq!(solver, A, b, M=M⁻¹, callback = cb_n2)
-        @test solver.stats.status == "user-requested exit"
-        @test cb_n2(solver)
+        lslq!(workspace, A, b, M=M⁻¹, callback = cb_n2)
+        @test workspace.stats.status == "user-requested exit"
+        @test cb_n2(workspace)
 
-        @test_throws TypeError lslq(A, b, M=M⁻¹, callback = solver -> "string", history = true)
+        @test_throws TypeError lslq(A, b, M=M⁻¹, callback = workspace -> "string", history = true)
       end
     end
   end

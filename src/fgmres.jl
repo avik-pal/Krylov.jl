@@ -12,11 +12,11 @@ export fgmres, fgmres!
 
 """
     (x, stats) = fgmres(A, b::AbstractVector{FC};
-                        memory::Int=20, M=I, N=I, ldiv::Bool=false,
+                        memory::Int=20, M=I, N=I, W=I, ldiv::Bool=false,
                         restart::Bool=false, reorthogonalization::Bool=false,
                         atol::T=√eps(T), rtol::T=√eps(T), itmax::Int=0,
                         timemax::Float64=Inf, verbose::Int=0, history::Bool=false,
-                        callback=solver->false, iostream::IO=kstdout)
+                        callback=workspace->false, iostream::IO=kstdout)
 
 `T` is an `AbstractFloat` such as `Float32`, `Float64` or `BigFloat`.
 `FC` is `T` or `Complex{T}`.
@@ -36,20 +36,27 @@ a Chebyshev iteration or another Krylov subspace method is used as a preconditio
 Compared to GMRES, there is no additional cost incurred in the arithmetic but the memory requirement almost doubles.
 Thus, GMRES is recommended if the right preconditioner N is constant.
 
+#### Interface
+
+To easily switch between Krylov methods, use the generic interface [`krylov_solve`](@ref) with `method = :fgmres`.
+
+For an in-place variant that reuses memory across solves, see [`fgmres!`](@ref).
+
 #### Input arguments
 
-* `A`: a linear operator that models a matrix of dimension n;
-* `b`: a vector of length n.
+* `A`: a linear operator that models a matrix of dimension `n`;
+* `b`: a vector of length `n`.
 
 #### Optional argument
 
-* `x0`: a vector of length n that represents an initial guess of the solution x.
+* `x0`: a vector of length `n` that represents an initial guess of the solution `x`.
 
 #### Keyword arguments
 
 * `memory`: if `restart = true`, the restarted version FGMRES(k) is used with `k = memory`. If `restart = false`, the parameter `memory` should be used as a hint of the number of iterations to limit dynamic memory allocations. Additional storage will be allocated if the number of iterations exceeds `memory`;
 * `M`: linear operator that models a nonsingular matrix of size `n` used for left preconditioning;
 * `N`: linear operator that models a nonsingular matrix of size `n` used for right preconditioning;
+* `W`: linear operator that models a Hermitian positive definite matrix of size `n` defining the inner product ⟨x, y⟩_W = xᴴWy. FGMRES minimizes the residual in the norm ‖·‖_W and the stopping tolerances apply to this norm. `W` is applied with `mul!`;
 * `ldiv`: define whether the preconditioners use `ldiv!` or `mul!`;
 * `restart`: restart the method after `memory` iterations;
 * `reorthogonalization`: reorthogonalize the new vectors of the Krylov basis against all previous vectors;
@@ -59,12 +66,12 @@ Thus, GMRES is recommended if the right preconditioner N is constant.
 * `timemax`: the time limit in seconds;
 * `verbose`: additional details can be displayed if verbose mode is enabled (verbose > 0). Information will be displayed every `verbose` iterations;
 * `history`: collect additional statistics on the run such as residual norms, or Aᴴ-residual norms;
-* `callback`: function or functor called as `callback(solver)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
+* `callback`: function or functor called as `callback(workspace)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
 * `iostream`: stream to which output is logged.
 
 #### Output arguments
 
-* `x`: a dense vector of length n;
+* `x`: a dense vector of length `n`;
 * `stats`: statistics collected on the run in a [`SimpleStats`](@ref) structure.
 
 #### Reference
@@ -74,15 +81,18 @@ Thus, GMRES is recommended if the right preconditioner N is constant.
 function fgmres end
 
 """
-    solver = fgmres!(solver::FgmresSolver, A, b; kwargs...)
-    solver = fgmres!(solver::FgmresSolver, A, b, x0; kwargs...)
+    workspace = fgmres!(workspace::FgmresWorkspace, A, b; kwargs...)
+    workspace = fgmres!(workspace::FgmresWorkspace, A, b, x0; kwargs...)
 
-where `kwargs` are keyword arguments of [`fgmres`](@ref).
+In these calls, `kwargs` are keyword arguments of [`fgmres`](@ref).
+The keyword argument `memory` is the only exception.
+It is only supported by [`fgmres`](@ref) and is required to create a `FgmresWorkspace`.
+It cannot be changed later.
 
-Note that the `memory` keyword argument is the only exception.
-It's required to create a `FgmresSolver` and can't be changed later.
+See [`FgmresWorkspace`](@ref) for instructions on how to create the `workspace`.
 
-See [`FgmresSolver`](@ref) for more details about the `solver`.
+For a more generic interface, you can use [`krylov_workspace`](@ref) with `method = :fgmres` to allocate the workspace,
+and [`krylov_solve!`](@ref) to run the Krylov method in-place.
 """
 function fgmres! end
 
@@ -93,6 +103,7 @@ def_optargs_fgmres = (:(x0::AbstractVector),)
 
 def_kwargs_fgmres = (:(; M = I                            ),
                      :(; N = I                            ),
+                     :(; W = I                            ),
                      :(; ldiv::Bool = false               ),
                      :(; restart::Bool = false            ),
                      :(; reorthogonalization::Bool = false),
@@ -102,81 +113,67 @@ def_kwargs_fgmres = (:(; M = I                            ),
                      :(; timemax::Float64 = Inf           ),
                      :(; verbose::Int = 0                 ),
                      :(; history::Bool = false            ),
-                     :(; callback = solver -> false       ),
+                     :(; callback = workspace -> false    ),
                      :(; iostream::IO = kstdout           ))
 
-def_kwargs_fgmres = mapreduce(extract_parameters, vcat, def_kwargs_fgmres)
+def_kwargs_workspace_fgmres = (:(; memory::Int = 20),)
+
+def_kwargs_fgmres = extract_parameters.(def_kwargs_fgmres)
+def_kwargs_workspace_fgmres = extract_parameters.(def_kwargs_workspace_fgmres)
 
 args_fgmres = (:A, :b)
 optargs_fgmres = (:x0,)
-kwargs_fgmres = (:M, :N, :ldiv, :restart, :reorthogonalization, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback, :iostream)
+kwargs_fgmres = (:M, :N, :W, :ldiv, :restart, :reorthogonalization, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback, :iostream)
+kwargs_workspace_fgmres = (:memory,)
 
 @eval begin
-  function fgmres($(def_args_fgmres...), $(def_optargs_fgmres...); memory :: Int=20, $(def_kwargs_fgmres...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = FgmresSolver(A, b, memory)
-    warm_start!(solver, $(optargs_fgmres...))
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    fgmres!(solver, $(args_fgmres...); $(kwargs_fgmres...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.stats)
-  end
-
-  function fgmres($(def_args_fgmres...); memory :: Int=20, $(def_kwargs_fgmres...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = FgmresSolver(A, b, memory)
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    fgmres!(solver, $(args_fgmres...); $(kwargs_fgmres...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.stats)
-  end
-
-  function fgmres!(solver :: FgmresSolver{T,FC,S}, $(def_args_fgmres...); $(def_kwargs_fgmres...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
+  function fgmres!(workspace :: FgmresWorkspace{T,FC,S}, $(def_args_fgmres...); $(def_kwargs_fgmres...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
 
     # Timer
     start_time = time_ns()
     timemax_ns = 1e9 * timemax
 
     m, n = size(A)
-    (m == solver.m && n == solver.n) || error("(solver.m, solver.n) = ($(solver.m), $(solver.n)) is inconsistent with size(A) = ($m, $n)")
+    (m == workspace.m && n == workspace.n) || error("(workspace.m, workspace.n) = ($(workspace.m), $(workspace.n)) is inconsistent with size(A) = ($m, $n)")
     m == n || error("System must be square")
     length(b) == m || error("Inconsistent problem size")
     (verbose > 0) && @printf(iostream, "FGMRES: system of size %d\n", n)
 
-    # Check M = Iₙ
+    # Check M = Iₙ and W = Iₙ
     MisI = (M === I)
+    WisI = (W === I)
 
     # Check type consistency
     eltype(A) == FC || @warn "eltype(A) ≠ $FC. This could lead to errors or additional allocations in operator-vector products."
-    ktypeof(b) <: S || error("ktypeof(b) is not a subtype of $S")
+    ktypeof(b) == S || error("ktypeof(b) must be equal to $S")
 
     # Set up workspace.
-    allocate_if(!MisI  , solver, :q , S, n)
-    allocate_if(restart, solver, :Δx, S, n)
-    Δx, x, w, V, Z = solver.Δx, solver.x, solver.w, solver.V, solver.Z
-    z, c, s, R, stats = solver.z, solver.c, solver.s, solver.R, solver.stats
-    warm_start = solver.warm_start
+    allocate_if(!MisI || !WisI, workspace, :q , S, workspace.x)  # The length of q is n
+    allocate_if(restart, workspace, :Δx, S, workspace.x)  # The length of Δx is n
+    Δx, x, w, V, Z = workspace.Δx, workspace.x, workspace.w, workspace.V, workspace.Z
+    z, c, s, R, stats = workspace.z, workspace.c, workspace.s, workspace.R, workspace.stats
+    warm_start = workspace.warm_start
     rNorms = stats.residuals
     reset!(stats)
-    q  = MisI ? w : solver.q
-    r₀ = MisI ? w : solver.q
+    q  = MisI ? w : workspace.q
+    r₀ = MisI ? w : workspace.q
     xr = restart ? Δx : x
+    Wq = WisI ? q : (MisI ? workspace.q : w)  # Wq = W * q, w is free once q ← Mw
 
     # Initial solution x₀.
-    x .= zero(FC)
+    kfill!(x, zero(FC))
 
     # Initial residual r₀.
     if warm_start
-      mul!(w, A, Δx)
-      @kaxpby!(n, one(FC), b, -one(FC), w)
-      restart && @kaxpy!(n, one(FC), Δx, x)
+      kmul!(w, A, Δx)
+      kaxpby!(n, one(FC), b, -one(FC), w)
+      restart && kaxpy!(n, one(FC), Δx, x)
     else
-      w .= b
+      kcopy!(n, w, b)  # w ← b
     end
     MisI || mulorldiv!(r₀, M, w, ldiv)  # r₀ = M(b - Ax₀)
-    β = @knrm2(n, r₀)                   # β = ‖r₀‖₂
+    WisI || kmul!(Wq, W, r₀)
+    β = knorm_elliptic(n, r₀, Wq)       # β = ‖r₀‖_W
 
     rNorm = β
     history && push!(rNorms, β)
@@ -185,10 +182,11 @@ kwargs_fgmres = (:M, :N, :ldiv, :restart, :reorthogonalization, :atol, :rtol, :i
     if β == 0
       stats.niter = 0
       stats.solved, stats.inconsistent = true, false
-      stats.timer = ktimer(start_time)
-      stats.status = "x = 0 is a zero-residual solution"
-      solver.warm_start = false
-      return solver
+      stats.timer = start_time |> ktimer
+      stats.status = "x is a zero-residual solution"
+      warm_start && kaxpy!(n, one(FC), Δx, x)
+      workspace.warm_start = false
+      return workspace
     end
 
     mem = length(c)  # Memory
@@ -201,10 +199,10 @@ kwargs_fgmres = (:M, :N, :ldiv, :restart, :reorthogonalization, :atol, :rtol, :i
     inner_itmax = itmax
 
     (verbose > 0) && @printf(iostream, "%5s  %5s  %7s  %7s  %5s\n", "pass", "k", "‖rₖ‖", "hₖ₊₁.ₖ", "timer")
-    kdisplay(iter, verbose) && @printf(iostream, "%5d  %5d  %7.1e  %7s  %.2fs\n", npass, iter, rNorm, "✗ ✗ ✗ ✗", ktimer(start_time))
+    kdisplay(iter, verbose) && @printf(iostream, "%5d  %5d  %7.1e  %7s  %.2fs\n", npass, iter, rNorm, "✗ ✗ ✗ ✗", start_time |> ktimer)
 
     # Tolerance for breakdown detection.
-    btol = eps(T)^(3/4)
+    btol = eps(T)^(3//4)
 
     # Stopping criterion
     breakdown = false
@@ -220,70 +218,72 @@ kwargs_fgmres = (:M, :N, :ldiv, :restart, :reorthogonalization, :atol, :rtol, :i
 
       # Initialize workspace.
       nr = 0  # Number of coefficients stored in Rₖ.
-      for i = 1 : mem
-        V[i] .= zero(FC)  # Orthogonal basis of {Mr₀, MANₖr₀, ..., (MANₖ)ᵏ⁻¹r₀}.
-        Z[i] .= zero(FC)  # Zₖ = [N₁v₁, ..., Nₖvₖ]
-      end
-      s .= zero(FC)  # Givens sines used for the factorization QₖRₖ = Hₖ₊₁.ₖ.
-      c .= zero(T)   # Givens cosines used for the factorization QₖRₖ = Hₖ₊₁.ₖ.
-      R .= zero(FC)  # Upper triangular matrix Rₖ.
-      z .= zero(FC)  # Right-hand of the least squares problem min ‖Hₖ₊₁.ₖyₖ - βe₁‖₂.
+      kfill!(s, zero(FC))  # Givens sines used for the factorization QₖRₖ = Hₖ₊₁.ₖ.
+      kfill!(c, zero(T))   # Givens cosines used for the factorization QₖRₖ = Hₖ₊₁.ₖ.
+      kfill!(R, zero(FC))  # Upper triangular matrix Rₖ.
+      kfill!(z, zero(FC))  # Right-hand of the least squares problem min ‖Hₖ₊₁.ₖyₖ - βe₁‖₂.
 
       if restart
-        xr .= zero(FC)  # xr === Δx when restart is set to true
+        kfill!(xr, zero(FC))  # xr === Δx when restart is set to true
         if npass ≥ 1
-          mul!(w, A, x)
-          @kaxpby!(n, one(FC), b, -one(FC), w)
+          kmul!(w, A, x)
+          kaxpby!(n, one(FC), b, -one(FC), w)
           MisI || mulorldiv!(r₀, M, w, ldiv)
+          WisI || kmul!(Wq, W, r₀)
+          β = knorm_elliptic(n, r₀, Wq)
         end
       end
 
-      # Initial ζ₁ and V₁
-      β = @knrm2(n, r₀)
+      # Initial ζ₁ and v₁
       z[1] = β
-      @. V[1] = r₀ / rNorm
+      kdivcopy!(n, V[1], r₀, β)  # v₁ = r₀ / ‖r₀‖, with ‖r₀‖ recomputed after a restart
 
       npass = npass + 1
-      solver.inner_iter = 0
+      workspace.inner_iter = 0
       inner_tired = false
 
       while !(solved || inner_tired || breakdown || user_requested_exit || overtimed)
 
         # Update iteration index
-        solver.inner_iter = solver.inner_iter + 1
-        inner_iter = solver.inner_iter
+        workspace.inner_iter = workspace.inner_iter + 1
+        inner_iter = workspace.inner_iter
 
         # Update workspace if more storage is required and restart is set to false
         if !restart && (inner_iter > mem)
+          start_allocation_time = time_ns()
           for i = 1 : inner_iter
             push!(R, zero(FC))
           end
           push!(s, zero(FC))
           push!(c, zero(T))
-          push!(Z, S(undef, n))
+          push!(Z, similar(workspace.x))
+          stats.allocation_timer += start_allocation_time |> ktimer
         end
 
         # Continue the process.
         # MAZₖ = Vₖ₊₁Hₖ₊₁.ₖ
         mulorldiv!(Z[inner_iter], N, V[inner_iter], ldiv)  # zₖ ← Nₖvₖ
-        mul!(w, A, Z[inner_iter])                          # w  ← Azₖ
+        kmul!(w, A, Z[inner_iter])                         # w  ← Azₖ
         MisI || mulorldiv!(q, M, w, ldiv)                  # q  ← MAzₖ
         for i = 1 : inner_iter
-          R[nr+i] = @kdot(n, V[i], q)      # hᵢₖ = (vᵢ)ᴴq
-          @kaxpy!(n, -R[nr+i], V[i], q)    # q ← q - hᵢₖvᵢ
+          WisI || kmul!(Wq, W, q)
+          R[nr+i] = kdot(n, V[i], Wq)     # hᵢₖ = (vᵢ)ᴴWq
+          kaxpy!(n, -R[nr+i], V[i], q)    # q ← q - hᵢₖvᵢ
         end
 
         # Reorthogonalization of the basis.
         if reorthogonalization
           for i = 1 : inner_iter
-            Htmp = @kdot(n, V[i], q)
+            WisI || kmul!(Wq, W, q)
+            Htmp = kdot(n, V[i], Wq)
             R[nr+i] += Htmp
-            @kaxpy!(n, -Htmp, V[i], q)
+            kaxpy!(n, -Htmp, V[i], q)
           end
         end
 
         # Compute hₖ₊₁.ₖ
-        Hbis = @knrm2(n, q)  # hₖ₊₁.ₖ = ‖vₖ₊₁‖₂
+        WisI || kmul!(Wq, W, q)
+        Hbis = knorm_elliptic(n, q, Wq)  # hₖ₊₁.ₖ = ‖vₖ₊₁‖_W
 
         # Update the QR factorization of Hₖ₊₁.ₖ.
         # Apply previous Givens reflections Ωᵢ.
@@ -305,34 +305,32 @@ kwargs_fgmres = (:M, :N, :ldiv, :restart, :reorthogonalization, :atol, :rtol, :i
         z[inner_iter] =      c[inner_iter]  * z[inner_iter]
 
         # Update residual norm estimate.
-        # ‖ M⁻¹(b - Axₖ) ‖₂ = |ζₖ₊₁|
+        # ‖ M⁻¹(b - Axₖ) ‖_W = |ζₖ₊₁|
         rNorm = abs(ζₖ₊₁)
         history && push!(rNorms, rNorm)
 
         # Update the number of coefficients in Rₖ
         nr = nr + inner_iter
 
-        # Stopping conditions that do not depend on user input.
-        # This is to guard against tolerances that are unreasonably small.
-        resid_decrease_mach = (rNorm + one(T) ≤ one(T))
-        
         # Update stopping criterion.
-        user_requested_exit = callback(solver) :: Bool
+        user_requested_exit = callback(workspace) :: Bool
         resid_decrease_lim = rNorm ≤ ε
         breakdown = Hbis ≤ btol
-        solved = resid_decrease_lim || resid_decrease_mach
+        solved = resid_decrease_lim
         inner_tired = restart ? inner_iter ≥ min(mem, inner_itmax) : inner_iter ≥ inner_itmax
         timer = time_ns() - start_time
         overtimed = timer > timemax_ns
-        kdisplay(iter+inner_iter, verbose) && @printf(iostream, "%5d  %5d  %7.1e  %7.1e  %.2fs\n", npass, iter+inner_iter, rNorm, Hbis, ktimer(start_time))
+        kdisplay(iter+inner_iter, verbose) && @printf(iostream, "%5d  %5d  %7.1e  %7.1e  %.2fs\n", npass, iter+inner_iter, rNorm, Hbis, start_time |> ktimer)
 
         # Compute vₖ₊₁
         if !(solved || inner_tired || breakdown || user_requested_exit || overtimed)
           if !restart && (inner_iter ≥ mem)
+            start_allocation_time = time_ns()
             push!(V, S(undef, n))
             push!(z, zero(FC))
+            stats.allocation_timer += start_allocation_time |> ktimer
           end
-          @. V[inner_iter+1] = q / Hbis  # hₖ₊₁.ₖvₖ₊₁ = q
+          kdivcopy!(n, V[inner_iter+1], q, Hbis)  # vₖ₊₁ = q / hₖ₊₁.ₖ
           z[inner_iter+1] = ζₖ₊₁
         end
       end
@@ -356,9 +354,9 @@ kwargs_fgmres = (:M, :N, :ldiv, :restart, :reorthogonalization, :atol, :rtol, :i
 
       # Form xₖ = N₁v₁y₁ + ... + Nₖvₖyₖ = z₁y₁ + ... + zₖyₖ
       for i = 1 : inner_iter
-        @kaxpy!(n, y[i], Z[i], xr)
+        kaxpy!(n, y[i], Z[i], xr)
       end
-      restart && @kaxpy!(n, one(FC), xr, x)
+      restart && kaxpy!(n, one(FC), xr, x)
 
       # Update inner_itmax, iter and tired variables.
       inner_itmax = inner_itmax - inner_iter
@@ -377,15 +375,15 @@ kwargs_fgmres = (:M, :N, :ldiv, :restart, :reorthogonalization, :atol, :rtol, :i
     overtimed           && (status = "time limit exceeded")
 
     # Update x
-    warm_start && !restart && @kaxpy!(n, one(FC), Δx, x)
-    solver.warm_start = false
+    warm_start && !restart && kaxpy!(n, one(FC), Δx, x)
+    workspace.warm_start = false
 
     # Update stats
     stats.niter = iter
     stats.solved = solved
     stats.inconsistent = inconsistent
-    stats.timer = ktimer(start_time)
+    stats.timer = start_time |> ktimer
     stats.status = status
-    return solver
+    return workspace
   end
 end

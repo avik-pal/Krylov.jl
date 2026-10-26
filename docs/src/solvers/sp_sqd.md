@@ -7,6 +7,7 @@
 ```@docs
 tricg
 tricg!
+TricgWorkspace
 ```
 
 ## TriMR
@@ -14,4 +15,13 @@ tricg!
 ```@docs
 trimr
 trimr!
+TrimrWorkspace
+```
+
+## USYMLQR
+
+```@docs
+usymlqr
+usymlqr!
+UsymlqrWorkspace
 ```

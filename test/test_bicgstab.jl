@@ -1,7 +1,7 @@
 @testset "bicgstab" begin
   bicgstab_tol = 1.0e-6
 
-    for FC in (Float64, ComplexF64)
+  for FC in (Float64, ComplexF64)
     @testset "Data Type: $FC" begin
 
       # Symmetric and positive definite system.
@@ -27,6 +27,15 @@
       resid = norm(r) / norm(b)
       @test(resid ≤ bicgstab_tol)
       @test(stats.solved)
+
+      # Exact solution after the first half-step (sₖ = 0).
+      # See https://github.com/JuliaSmoothOptimizers/Krylov.jl/issues/1126
+      A = Matrix{FC}(I, 3, 3)
+      b = FC[1, 2, 3]
+      (x, stats) = bicgstab(A, b)
+      @test x ≈ b
+      @test stats.solved
+      @test stats.niter == 1
 
       # Nonsymmetric indefinite variant.
       A, b = nonsymmetric_indefinite(FC=FC)
@@ -56,13 +65,13 @@
       A, b = zero_rhs(FC=FC)
       (x, stats) = bicgstab(A, b)
       @test norm(x) == 0
-      @test stats.status == "x = 0 is a zero-residual solution"
+      @test stats.status == "x is a zero-residual solution"
 
       # Left preconditioning
       A, b, M = square_preconditioned(FC=FC)
       (x, stats) = bicgstab(A, b, M=M)
       r = b - A * x
-      resid = norm(r) / norm(b)
+      resid = norm(M * r) / norm(M * b)
       @test(resid ≤ bicgstab_tol)
       @test(stats.solved)
 
@@ -78,7 +87,7 @@
       A, b, M, N = two_preconditioners(500, 32)
       (x, stats) = bicgstab(A, b, M=M, N=N)
       r = b - A * x
-      resid = norm(r) / norm(b)
+      resid = norm(M * r) / norm(M * b)
       @test(resid ≤ bicgstab_tol)
       @test(stats.solved)
 
@@ -88,14 +97,14 @@
       @test stats.status == "Breakdown bᴴc = 0"
 
       # test callback function
-      solver = BicgstabSolver(A, b)
+      workspace = BicgstabWorkspace(A, b)
       tol = 1.0e-1
       cb_n2 = TestCallbackN2(A, b, tol = tol)
-      bicgstab!(solver, A, b, callback = cb_n2)
-      @test solver.stats.status == "user-requested exit"
-      @test cb_n2(solver)
+      bicgstab!(workspace, A, b, callback = cb_n2)
+      @test workspace.stats.status == "user-requested exit"
+      @test cb_n2(workspace)
 
-      @test_throws TypeError bicgstab(A, b, callback = solver -> "string", history = true)
+      @test_throws TypeError bicgstab(A, b, callback = workspace -> "string", history = true)
     end
   end
 end

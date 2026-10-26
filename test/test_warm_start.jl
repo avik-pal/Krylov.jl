@@ -1,4 +1,5 @@
 function test_warm_start(FC)
+  T = real(FC)
   A, b = warm_start(FC=FC)
   c = copy(b)
   n, m = size(A)
@@ -8,305 +9,538 @@ function test_warm_start(FC)
   nshifts = 5
   tol = 1.0e-6
 
-  # BILQR
-  x, y, stats = bilqr(A, b, c, x0, y0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
-  s = c - A' * y
-  resid = norm(s) / norm(c)
-  @test(resid ≤ tol)
+  J = 5 * Matrix{FC}(I, n, n)
+  z0 = -2 * ones(FC, n)
+  d = -10 * ones(FC, n)
 
-  solver = BilqrSolver(A, b)
-  solve!(solver, A, b, c, x0, y0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
-  s = c - A' * solver.y
-  resid = norm(s) / norm(c)
-  @test(resid ≤ tol)
+  # For relevant bipartite methods, it's also important to test asymmetric sizes
+  A3x2, b3, c2, M3x3, N2x2 = small_sqd(false; FC)
+
+  # BILQR
+  @testset "bilqr" begin
+    x, y, stats = bilqr(A, b, c, x0, y0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+    s = c - A' * y
+    resid = norm(s) / norm(c)
+    @test(resid ≤ tol)
+
+    workspace = BilqrWorkspace(A, b)
+    krylov_solve!(workspace, A, b, c, x0, y0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+    s = c - A' * workspace.y
+    resid = norm(s) / norm(c)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, d, z0, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+    s = d - J' * workspace.y
+    resid = norm(s) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # TRILQR
-  x, y, stats = trilqr(A, b, c, x0, y0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
-  s = c - A' * y
-  resid = norm(s) / norm(c)
-  @test(resid ≤ tol)
+  @testset "trilqr" begin
+    x, y, stats = trilqr(A, b, c, x0, y0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+    s = c - A' * y
+    resid = norm(s) / norm(c)
+    @test(resid ≤ tol)
 
-  solver = TrilqrSolver(A, b)
-  solve!(solver, A, b, c, x0, y0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
-  s = c - A' * solver.y
-  resid = norm(s) / norm(c)
-  @test(resid ≤ tol)
+    x30, y20, _ = trilqr(A3x2, b3, c2)
+    x3, y2, stats = trilqr(A3x2, b3, c2, x30, y20)
+    @test_broken x3 ≈ x30 atol=1e-12
+    @test y2 ≈ y20 atol=1e-12
+    @test_broken stats.niter <= 1
+    @test_throws "x0 should have size $(length(x30))" trilqr(A3x2, b3, c2, [1.0], y20)
+    @test_throws "y0 should have size $(length(y20))" trilqr(A3x2, b3, c2, x30, [1.0])
+
+    workspace = TrilqrWorkspace(A, b)
+    krylov_solve!(workspace, A, b, c, x0, y0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+    s = c - A' * workspace.y
+    resid = norm(s) / norm(c)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, d, z0, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+    s = d - J' * workspace.y
+    resid = norm(s) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # TRICG
-  x, y, stats = tricg(A, b, b, x0, y0)
-  r = [b - x - A * y; b - A' * x + y]
-  resid = norm(r) / norm([b; b])
-  @test(resid ≤ tol)
+  @testset "tricg" begin
+    x, y, stats = tricg(A, b, b, x0, y0)
+    r = [b - x - A * y; b - A' * x + y]
+    resid = norm(r) / norm([b; b])
+    @test(resid ≤ tol)
 
-  solver = TricgSolver(A, b)
-  solve!(solver, A, b, b, x0, y0)
-  r = [b - solver.x - A * solver.y; b - A' * solver.x + solver.y]
-  resid = norm(r) / norm([b; b])
-  @test(resid ≤ tol)
+    x30, y20, _ = tricg(A3x2, b3, c2)
+    x3, y2, stats = tricg(A3x2, b3, c2, x30, y20)
+    @test x3 ≈ x30 atol=1e-12
+    @test y2 ≈ y20 atol=1e-12
+    @test stats.niter <= 1
+    @test_throws "x0 should have size $(length(x30))" tricg(A3x2, b3, c2, [1.0], y20)
+    @test_throws "y0 should have size $(length(y20))" tricg(A3x2, b3, c2, x30, [1.0])
+    workspace = TricgWorkspace(A, b)
+    krylov_solve!(workspace, A, b, b, x0, y0)
+    r = [b - workspace.x - A * workspace.y; b - A' * workspace.x + workspace.y]
+    resid = norm(r) / norm([b; b])
+    @test(resid ≤ tol)
+
+    τ = zero(T)
+    ν = zero(T)
+    krylov_solve!(workspace, J, d, d, z0, z0; τ, ν)
+    r = [d - τ * workspace.x - J * workspace.y; d - J' * workspace.x - ν * workspace.y]
+    resid = norm(r) / norm([d; d])
+    @test(resid ≤ tol)
+  end
 
   # TRIMR
-  x, y, stats = trimr(A, b, b, x0, y0)
-  r = [b - x - A * y; b - A' * x + y]
-  resid = norm(r) / norm([b; b])
-  @test(resid ≤ tol)
+  @testset "trimr" begin
+    x, y, stats = trimr(A, b, b, x0, y0)
+    r = [b - x - A * y; b - A' * x + y]
+    resid = norm(r) / norm([b; b])
+    @test(resid ≤ tol)
 
-  solver = TrimrSolver(A, b)
-  solve!(solver, A, b, b, x0, y0)
-  r = [b - solver.x - A * solver.y; b - A' * solver.x + solver.y]
-  resid = norm(r) / norm([b; b])
-  @test(resid ≤ tol)
+    x30, y20, _ = trimr(A3x2, b3, c2)
+    x3, y2, stats = trimr(A3x2, b3, c2, x30, y20)
+    @test x3 ≈ x30 atol=1e-12
+    @test y2 ≈ y20 atol=1e-12
+    @test stats.niter <= 1
+    @test_throws "x0 should have size $(length(x30))" trimr(A3x2, b3, c2, [1.0], y20)
+    @test_throws "y0 should have size $(length(y20))" trimr(A3x2, b3, c2, x30, [1.0])
+    workspace = TrimrWorkspace(A, b)
+    krylov_solve!(workspace, A, b, b, x0, y0)
+    r = [b - workspace.x - A * workspace.y; b - A' * workspace.x + workspace.y]
+    resid = norm(r) / norm([b; b])
+    @test(resid ≤ tol)
+
+    τ = zero(T)
+    ν = zero(T)
+    krylov_solve!(workspace, J, d, d, z0, z0; τ, ν)
+    r = [d - τ * workspace.x - J * workspace.y; d - J' * workspace.x - ν * workspace.y]
+    resid = norm(r) / norm([d; d])
+    @test(resid ≤ tol)
+  end
+
+  # USYMLQR
+  @testset "usymlqr" begin
+    x, y, stats = usymlqr(A, b, b, x0, y0)
+    r = [b - x - A * y; b - A' * x]
+    resid = norm(r) / norm([b; b])
+    @test(resid ≤ tol)
+
+    workspace = UsymlqrWorkspace(A, b)
+    krylov_solve!(workspace, A, b, b, x0, y0)
+    r = [b - workspace.x - A * workspace.y; b - A' * workspace.x]
+    resid = norm(r) / norm([b; b])
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, A, b, b, z0, z0)
+    r = [b - workspace.x - A * workspace.y; b - A' * workspace.x]
+    resid = norm(r) / norm([b; b])
+    @test(resid ≤ tol)
+  end
 
   # GPMR
-  x, y, stats = gpmr(A, A', b, b, x0, y0)
-  r = [b - x - A * y; b - A' * x - y]
-  resid = norm(r) / norm([b; b])
-  @test(resid ≤ tol)
+  @testset "gpmr" begin
+    x, y, stats = gpmr(A, A', b, b, x0, y0)
+    r = [b - x - A * y; b - A' * x - y]
+    resid = norm(r) / norm([b; b])
+    @test(resid ≤ tol)
 
-  solver = GpmrSolver(A, b)
-  solve!(solver, A, A', b, b, x0, y0)
-  r = [b - solver.x - A * solver.y; b - A' * solver.x - solver.y]
-  resid = norm(r) / norm([b; b])
-  @test(resid ≤ tol)
+    x30, y20, _ = gpmr(A3x2, A3x2', b3, c2)
+    x3, y2, stats = gpmr(A3x2, A3x2', b3, c2, x30, y20)
+    @test stats.niter <= 1
+    @test_throws "x0 should have size $(length(x30))" gpmr(A3x2, A3x2', b3, c2, [1.0], y20)
+    @test_throws "y0 should have size $(length(y20))" gpmr(A3x2, A3x2', b3, c2, x30, [1.0])
+    workspace = GpmrWorkspace(A, b)
+    krylov_solve!(workspace, A, A', b, b, x0, y0)
+    r = [b - workspace.x - A * workspace.y; b - A' * workspace.x - workspace.y]
+    resid = norm(r) / norm([b; b])
+    @test(resid ≤ tol)
+
+    λ = zero(FC)
+    μ = zero(FC)
+    krylov_solve!(workspace, J, J', d, d, z0, z0; λ, μ)
+    r = [d - λ * workspace.x - J * workspace.y; d - J' * workspace.x - μ * workspace.y]
+    resid = norm(r) / norm([d; d])
+    @test(resid ≤ tol)
+  end
 
   # MINRES-QLP
-  x, stats = minres_qlp(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "minres_qlp" begin
+    x, stats = minres_qlp(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = MinresQlpSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = MinresQlpWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # SYMMLQ
-  x, stats = symmlq(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "symmlq" begin
+    x, stats = symmlq(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = SymmlqSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = SymmlqWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # CG
-  x, stats = cg(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "cg" begin
+    x, stats = cg(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = CgSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = CgWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # CR
-  x, stats = cr(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "cr" begin
+    x, stats = cr(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = CrSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = CrWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # CAR
-  x, stats = car(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "car" begin
+    x, stats = car(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = CarSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = CarWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # CG-LANCZOS
-  x, stats = cg_lanczos(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "cg_lanczos" begin
+    x, stats = cg_lanczos(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = CgLanczosSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = CgLanczosWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # MINRES
-  x, stats = minres(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "minres" begin
+    x, stats = minres(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = MinresSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = MinresWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # MINARES
-  x, stats = minares(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "minares" begin
+    x, stats = minares(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = MinaresSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = MinaresWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # DIOM
-  x, stats = diom(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "diom" begin
+    x, stats = diom(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = DiomSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = DiomWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # DQGMRES
-  x, stats = dqgmres(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "dqgmres" begin
+    x, stats = dqgmres(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = DqgmresSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = DqgmresWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # FOM
-  x, stats = fom(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "fom" begin
+    x, stats = fom(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = FomSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = FomWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # GMRES
-  x, stats = gmres(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "gmres" begin
+    x, stats = gmres(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = GmresSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = GmresWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # FGMRES
-  x, stats = fgmres(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "fgmres" begin
+    x, stats = fgmres(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = FgmresSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = FgmresWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # BICGSTAB
-  x, stats = bicgstab(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "bicgstab" begin
+    x, stats = bicgstab(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = BicgstabSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = BicgstabWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # CGS
-  x, stats = cgs(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "cgs" begin
+    x, stats = cgs(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = CgsSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = CgsWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # BILQ
-  x, stats = bilq(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "bilq" begin
+    x, stats = bilq(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = BilqSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = BilqWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # QMR
-  x, stats = qmr(A, b, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "qmr" begin
+    x, stats = qmr(A, b, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = QmrSolver(A, b)
-  solve!(solver, A, b, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = QmrWorkspace(A, b)
+    krylov_solve!(workspace, A, b, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # USYMLQ
-  x, stats = usymlq(A, b, c, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "usymlq" begin
+    x, stats = usymlq(A, b, c, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = UsymlqSolver(A, b)
-  solve!(solver, A, b, c, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = UsymlqWorkspace(A, b)
+    krylov_solve!(workspace, A, b, c, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 
   # USYMQR
-  x, stats = usymqr(A, b, c, x0)
-  r = b - A * x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+  @testset "usymqr" begin
+    x, stats = usymqr(A, b, c, x0)
+    r = b - A * x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
 
-  solver = UsymqrSolver(A, b)
-  solve!(solver, A, b, c, x0)
-  r = b - A * solver.x
-  resid = norm(r) / norm(b)
-  @test(resid ≤ tol)
+    workspace = UsymqrWorkspace(A, b)
+    krylov_solve!(workspace, A, b, c, x0)
+    r = b - A * workspace.x
+    resid = norm(r) / norm(b)
+    @test(resid ≤ tol)
+
+    krylov_solve!(workspace, J, d, d, z0)
+    r = d - J * workspace.x
+    resid = norm(r) / norm(d)
+    @test(resid ≤ tol)
+  end
 end
 
 @testset "warm-start" begin

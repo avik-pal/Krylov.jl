@@ -24,7 +24,7 @@
       A, b = zero_rhs(FC=FC)
       (x, stats) = car(A, b)
       @test norm(x) == 0
-      @test stats.status == "x = 0 is a zero-residual solution"
+      @test stats.status == "x is a zero-residual solution"
 
       # Test with Jacobi (or diagonal) preconditioner
       A, b, M = square_preconditioned(FC=FC)
@@ -33,6 +33,18 @@
       resid = norm(M * r) / norm(M * b)
       @test(resid ≤ car_tol)
       @test(stats.solved)
+
+      # The estimates are ‖Mrₖ‖₂ and ‖AMrₖ‖_M with a preconditioner
+      A, b = symmetric_definite(FC=FC)
+      n = length(b)
+      X = rand(FC, n, n)
+      M = Matrix(Hermitian(X * X' + n * I))
+      for k in 1:5
+        (x, stats) = car(A, b, M=M, itmax=k, atol=0.0, rtol=0.0, history=true)
+        r = b - A * x
+        @test stats.residuals[end] ≈ norm(M * r)
+        @test stats.Aresiduals[end] ≈ sqrt(real(dot(A * M * r, M * (A * M * r))))
+      end
 
       # Test singular and consistent system
       A, b = singular_consistent(FC=FC)
@@ -52,14 +64,14 @@
 
       # test callback function
       A, b = cartesian_poisson(FC=FC)
-      solver = CarSolver(A, b)
+      workspace = CarWorkspace(A, b)
       tol = 1.0e-1
       cb_n2 = TestCallbackN2(A, b, tol = tol)
-      car!(solver, A, b, callback = cb_n2)
-      @test solver.stats.status == "user-requested exit"
-      @test cb_n2(solver)
+      car!(workspace, A, b, callback = cb_n2)
+      @test workspace.stats.status == "user-requested exit"
+      @test cb_n2(workspace)
 
-      @test_throws TypeError car(A, b, callback = solver -> "string", history = true)
+      @test_throws TypeError car(A, b, callback = workspace -> "string", history = true)
     end
   end
 end

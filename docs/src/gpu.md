@@ -32,7 +32,7 @@ Sparse matrices have a specific storage on Nvidia GPUs (`CuSparseMatrixCSC`, `Cu
 
 ```julia
 using CUDA, Krylov
-using CUDA.CUSPARSE, SparseArrays
+using CUDA.cuSPARSE, SparseArrays
 
 if CUDA.functional()
   # CPU Arrays
@@ -52,10 +52,10 @@ if CUDA.functional()
 end
 ```
 
-If you use a Krylov method that only requires `A * v` products (see [here](@ref factorization-free)), the most efficient format is `CuSparseMatrixCSR`.
+If you use a Krylov method that only requires `A * v` products (see [here](@ref matrix-free)), the most efficient format is `CuSparseMatrixCSR`.
 Optimized operator-vector and operator-matrix products that exploit GPU features can be also used by means of linear operators.
 
-For instance, when executing sparse matrix products on NVIDIA GPUs, the `mul!` function utilized by Krylov.jl internally calls three routines from CUSPARSE.
+For instance, when executing sparse matrix products on NVIDIA GPUs, the `mul!` function utilized by Krylov.jl internally calls three routines from cuSPARSE.
 The first one conducts an analysis of the sparse matrix's structure, the second one determines the size of the buffer that needs to be allocated, and the last one handles the product using the allocated buffer.
 To circumvent the need for repeated analysis computations and buffer allocation/deallocation with each product, we introduce a `KrylovOperator` in [KrylovPreconditioners.jl](https://github.com/JuliaSmoothOptimizers/KrylovPreconditioners.jl).
 This operator performs the analysis and allocates the buffer only once.
@@ -68,14 +68,14 @@ opA_gpu = KrylovOperator(A_gpu)
 x_gpu, stats = gmres(opA_gpu, b_gpu)
 ```
 
-Preconditioners, especially incomplete Cholesky or Incomplete LU factorizations that involve triangular solves,
-can be applied directly on GPU thanks to efficient operators that take advantage of CUSPARSE routines.
+Preconditioners, especially incomplete Cholesky or incomplete LU factorizations that involve sparse triangular solves,
+can be applied directly on GPU thanks to efficient operators (like `TriangularOperator`) that take advantage of cuSPARSE routines.
 
 ### Example with a symmetric positive-definite system
 
 ```julia
 using SparseArrays, Krylov, LinearOperators
-using CUDA, CUDA.CUSPARSE
+using CUDA, CUDA.cuSPARSE
 
 if CUDA.functional()
   # Transfer the linear system from the CPU to the GPU
@@ -107,7 +107,7 @@ if CUDA.functional()
   symmetric = hermitian = true
   opM = LinearOperator(T, n, n, symmetric, hermitian, (y, x) -> ldiv_ic0!(P, x, y, z))
 
-  # Solve an Hermitian positive definite system with an IC(0) preconditioner on GPU
+  # Solve a Hermitian positive definite system with an IC(0) preconditioner on GPU
   x, stats = cg(A_gpu, b_gpu, M=opM)
 end
 ```
@@ -116,7 +116,7 @@ end
 
 ```julia
 using SparseArrays, Krylov, LinearOperators
-using CUDA, CUDA.CUSPARSE, CUDA.CUSOLVER
+using CUDA, CUDA.cuSPARSE, CUDA.cuSOLVER
 
 if CUDA.functional()
   # Optional -- Compute a permutation vector p such that A[:,p] has no zero diagonal
@@ -221,6 +221,10 @@ opA_gpu = KrylovOperator(A_gpu)
 x_gpu, stats = bicgstab(opA_gpu, b_gpu)
 ```
 
+Preconditioners, especially incomplete Cholesky or incomplete LU factorizations that involve sparse triangular solves,
+can be applied directly on GPU thanks to efficient operators (like `TriangularOperator`) that take advantage of rocSPARSE routines.
+
+
 ## Intel GPUs
 
 All solvers in Krylov.jl can be used with [oneAPI.jl](https://github.com/JuliaGPU/oneAPI.jl) and allow computations on Intel GPUs.
@@ -247,8 +251,36 @@ if oneAPI.functional()
 end
 ```
 
+Sparse matrices have a specific storage on Intel GPUs (`oneSparseMatrixCSR` or `oneSparseMatrixCSC`):
+
+```julia
+using Krylov, oneAPI
+using oneAPI.oneMKL, SparseArrays
+
+if oneAPI.functional()
+  T = Float32  # oneAPI.jl also works with ComplexF32
+  m = 200
+  n = 100
+
+  # CPU Arrays
+  A_cpu = sprand(T, m, n, 0.3)
+  b_cpu = rand(T, m)
+
+  # GPU Arrays
+  A_csr_gpu = oneSparseMatrixCSR(A_cpu)
+  A_csc_gpu = oneSparseMatrixCSC(A_cpu)
+  b_gpu = oneVector(b_cpu)
+
+  # Solve a rectangular and sparse system on an Intel GPU
+  x_csr, stats_csr = lsqr(A_csr_gpu, b_gpu)
+  x_csc, stats_csc = lsmr(A_csc_gpu, b_gpu)
+end
+```
+
 !!! note
-    The library `oneMKL` is interfaced in oneAPI.jl and accelerates linear algebra operations on Intel GPUs. Only dense linear systems are supported for the time being because sparse linear algebra routines are not interfaced yet.
+    The library `oneMKL` is interfaced in oneAPI.jl and accelerates dense and sparse linear algebra operations on Intel GPUs.
+    Sparse matrix-vector products are only supported for the formats `oneSparseMatrixCSR` and `oneSparseMatrixCSC`; `oneSparseMatrixCSC` requires oneMKL 2025.3 or later.
+    A `oneSparseMatrixCOO` can be created but cannot be used with Krylov.jl because oneMKL does not provide products for this format.
 
 ## Apple M1 GPUs
 

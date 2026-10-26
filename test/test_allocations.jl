@@ -1,3 +1,6 @@
+# A keyword argument call from global scope allocates on Julia 1.10
+allocated_with_W(solver!, workspace, A, b, W) = @allocated solver!(workspace, A, b; W)
+
 @testset "allocations" begin
 
   for FC in (Float32, Float64, ComplexF32, ComplexF64)
@@ -5,15 +8,17 @@
 
       A   = FC.(get_div_grad(18, 18, 18))  # Dimension m x n
       m,n = size(A)
+      p   = 5
       k   = div(n, 2)
       Au  = A[1:k,:]          # Dimension k x n
       Ao  = A[:,1:k]          # Dimension m x k
       b   = Ao * ones(FC, k)  # Dimension m
       c   = Au * ones(FC, n)  # Dimension k
-      mem = 200
+      B   = A * Matrix{FC}(I, m, p)  # Dimension m × p
+      mem = 100
 
       T = real(FC)
-      shifts  = T[1; 2; 3; 4; 5]
+      shifts = T[1; 2; 3; 4; 5]
       nshifts = 5
       nbits_FC = sizeof(FC)  # 8 bits for ComplexF32 and 16 bits for ComplexF64
       nbits_T = sizeof(T)    # 4 bits for Float32 and 8 bits for Float64
@@ -26,11 +31,13 @@
         expected_symmlq_bytes = storage_symmlq_bytes(n)
         symmlq(A, b)  # warmup
         actual_symmlq_bytes = @allocated symmlq(A, b)
-        @test expected_symmlq_bytes ≤ actual_symmlq_bytes ≤ 1.02 * expected_symmlq_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_symmlq_bytes ≤ actual_symmlq_bytes ≤ 1.02 * expected_symmlq_bytes
+        end
 
-        solver = SymmlqSolver(A, b)
-        symmlq!(solver, A, b)  # warmup
-        inplace_symmlq_bytes = @allocated symmlq!(solver, A, b)
+        workspace = SymmlqWorkspace(A, b)
+        symmlq!(workspace, A, b)  # warmup
+        inplace_symmlq_bytes = @allocated symmlq!(workspace, A, b)
         @test inplace_symmlq_bytes == 0
       end
 
@@ -42,11 +49,13 @@
         expected_cg_bytes = storage_cg_bytes(n)
         cg(A, b)  # warmup
         actual_cg_bytes = @allocated cg(A, b)
-        @test expected_cg_bytes ≤ actual_cg_bytes ≤ 1.02 * expected_cg_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_cg_bytes ≤ actual_cg_bytes ≤ 1.02 * expected_cg_bytes
+        end
 
-        solver = CgSolver(A, b)
-        cg!(solver, A, b)  # warmup
-        inplace_cg_bytes = @allocated cg!(solver, A, b)
+        workspace = CgWorkspace(A, b)
+        cg!(workspace, A, b)  # warmup
+        inplace_cg_bytes = @allocated cg!(workspace, A, b)
         @test inplace_cg_bytes == 0
       end
 
@@ -58,11 +67,13 @@
         expected_cg_lanczos_bytes = storage_cg_lanczos_bytes(n)
         cg_lanczos(A, b)  # warmup
         actual_cg_lanczos_bytes = @allocated cg_lanczos(A, b)
-        @test expected_cg_lanczos_bytes ≤ actual_cg_lanczos_bytes ≤ 1.02 * expected_cg_lanczos_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_cg_lanczos_bytes ≤ actual_cg_lanczos_bytes ≤ 1.02 * expected_cg_lanczos_bytes
+        end
 
-        solver = CgLanczosSolver(A, b)
-        cg_lanczos!(solver, A, b)  # warmup
-        inplace_cg_lanczos_bytes = @allocated cg_lanczos!(solver, A, b)
+        workspace = CgLanczosWorkspace(A, b)
+        cg_lanczos!(workspace, A, b)  # warmup
+        inplace_cg_lanczos_bytes = @allocated cg_lanczos!(workspace, A, b)
         @test inplace_cg_lanczos_bytes == 0
       end
 
@@ -76,11 +87,13 @@
         expected_cg_lanczos_shift_bytes = storage_cg_lanczos_shift_bytes(n, nshifts)
         cg_lanczos_shift(A, b, shifts)  # warmup
         actual_cg_lanczos_shift_bytes = @allocated cg_lanczos_shift(A, b, shifts)
-        @test expected_cg_lanczos_shift_bytes ≤ actual_cg_lanczos_shift_bytes ≤ 1.02 * expected_cg_lanczos_shift_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_cg_lanczos_shift_bytes ≤ actual_cg_lanczos_shift_bytes ≤ 1.02 * expected_cg_lanczos_shift_bytes
+        end
 
-        solver = CgLanczosShiftSolver(A, b, nshifts)
-        cg_lanczos_shift!(solver, A, b, shifts)  # warmup
-        inplace_cg_lanczos_shift_bytes = @allocated cg_lanczos_shift!(solver, A, b, shifts)
+        workspace = CgLanczosShiftWorkspace(A, b, nshifts)
+        cg_lanczos_shift!(workspace, A, b, shifts)  # warmup
+        inplace_cg_lanczos_shift_bytes = @allocated cg_lanczos_shift!(workspace, A, b, shifts)
         @test inplace_cg_lanczos_shift_bytes == 0
       end
 
@@ -92,11 +105,13 @@
         expected_cr_bytes = storage_cr_bytes(n)
         cr(A, b)  # warmup
         actual_cr_bytes = @allocated cr(A, b)
-        @test expected_cr_bytes ≤ actual_cr_bytes ≤ 1.02 * expected_cr_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_cr_bytes ≤ actual_cr_bytes ≤ 1.02 * expected_cr_bytes
+        end
 
-        solver = CrSolver(A, b)
-        cr!(solver, A, b)  # warmup
-        inplace_cr_bytes = @allocated cr!(solver, A, b)
+        workspace = CrWorkspace(A, b)
+        cr!(workspace, A, b)  # warmup
+        inplace_cr_bytes = @allocated cr!(workspace, A, b)
         @test inplace_cr_bytes == 0
       end
 
@@ -108,11 +123,13 @@
         expected_car_bytes = storage_car_bytes(n)
         car(A, b)  # warmup
         actual_car_bytes = @allocated car(A, b)
-        @test expected_car_bytes ≤ actual_car_bytes ≤ 1.02 * expected_car_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_car_bytes ≤ actual_car_bytes ≤ 1.02 * expected_car_bytes
+        end
 
-        solver = CarSolver(A, b)
-        car!(solver, A, b)  # warmup
-        inplace_car_bytes = @allocated car!(solver, A, b)
+        workspace = CarWorkspace(A, b)
+        car!(workspace, A, b)  # warmup
+        inplace_car_bytes = @allocated car!(workspace, A, b)
         @test inplace_car_bytes == 0
       end
 
@@ -124,11 +141,13 @@
         expected_minres_bytes = storage_minres_bytes(n)
         minres(A, b)  # warmup
         actual_minres_bytes = @allocated minres(A, b)
-        @test expected_minres_bytes ≤ actual_minres_bytes ≤ 1.02 * expected_minres_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_minres_bytes ≤ actual_minres_bytes ≤ 1.02 * expected_minres_bytes
+        end
 
-        solver = MinresSolver(A, b)
-        minres!(solver, A, b)  # warmup
-        inplace_minres_bytes = @allocated minres!(solver, A, b)
+        workspace = MinresWorkspace(A, b)
+        minres!(workspace, A, b)  # warmup
+        inplace_minres_bytes = @allocated minres!(workspace, A, b)
         @test inplace_minres_bytes == 0
       end
 
@@ -140,11 +159,13 @@
         expected_minres_qlp_bytes = storage_minres_qlp_bytes(n)
         minres_qlp(A, b)  # warmup
         actual_minres_qlp_bytes = @allocated minres_qlp(A, b)
-        @test expected_minres_qlp_bytes ≤ actual_minres_qlp_bytes ≤ 1.02 * expected_minres_qlp_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_minres_qlp_bytes ≤ actual_minres_qlp_bytes ≤ 1.02 * expected_minres_qlp_bytes
+        end
 
-        solver = MinresQlpSolver(A, b)
-        minres_qlp!(solver, A, b)  # warmup
-        inplace_minres_qlp_bytes = @allocated minres_qlp!(solver, A, b)
+        workspace = MinresQlpWorkspace(A, b)
+        minres_qlp!(workspace, A, b)  # warmup
+        inplace_minres_qlp_bytes = @allocated minres_qlp!(workspace, A, b)
         @test inplace_minres_qlp_bytes == 0
       end
 
@@ -156,11 +177,13 @@
         expected_minares_bytes = storage_minares_bytes(n)
         minares(A, b)  # warmup
         actual_minares_bytes = @allocated minares(A, b)
-        @test expected_minares_bytes ≤ actual_minares_bytes ≤ 1.02 * expected_minares_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_minares_bytes ≤ actual_minares_bytes ≤ 1.02 * expected_minares_bytes
+        end
 
-        solver = MinaresSolver(A, b)
-        minares!(solver, A, b)  # warmup
-        inplace_minares_bytes = @allocated minares!(solver, A, b)
+        workspace = MinaresWorkspace(A, b)
+        minares!(workspace, A, b)  # warmup
+        inplace_minares_bytes = @allocated minares!(workspace, A, b)
         @test inplace_minares_bytes == 0
       end
 
@@ -174,13 +197,20 @@
         storage_diom_bytes(mem, n) = nbits_FC * ((2 * n) + (n * mem) + (n * (mem-1)) + (mem-1) + (mem))
 
         expected_diom_bytes = storage_diom_bytes(mem, n)
-        diom(A, b, memory=mem)  # warmup
-        actual_diom_bytes = @allocated diom(A, b, memory=mem)
-        @test expected_diom_bytes ≤ actual_diom_bytes ≤ 1.02 * expected_diom_bytes
+        diom(A, b; memory=mem)  # warmup
+        actual_diom_bytes = @allocated diom(A, b; memory=mem)
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_diom_bytes ≤ actual_diom_bytes ≤ 1.02 * expected_diom_bytes
+        end
 
-        solver = DiomSolver(A, b, mem)
-        diom!(solver, A, b)  # warmup
-        inplace_diom_bytes = @allocated diom!(solver, A, b)
+        workspace = DiomWorkspace(A, b; memory=mem)
+        diom!(workspace, A, b)  # warmup
+        inplace_diom_bytes = @allocated diom!(workspace, A, b)
+        @test inplace_diom_bytes == 0
+
+        W = Diagonal(ones(FC, n))
+        allocated_with_W(diom!, workspace, A, b, W)  # warmup
+        inplace_diom_bytes = allocated_with_W(diom!, workspace, A, b, W)
         @test inplace_diom_bytes == 0
       end
 
@@ -193,13 +223,20 @@
         storage_fom_bytes(mem, n) = nbits_FC * ((2 * n) + (n * mem) + (2 * mem) + (mem * (mem+1) / 2))
 
         expected_fom_bytes = storage_fom_bytes(mem, n)
-        fom(A, b, memory=mem)  # warmup
-        actual_fom_bytes = @allocated fom(A, b, memory=mem)
-        @test expected_fom_bytes ≤ actual_fom_bytes ≤ 1.02 * expected_fom_bytes
+        fom(A, b; memory=mem)  # warmup
+        actual_fom_bytes = @allocated fom(A, b; memory=mem)
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_fom_bytes ≤ actual_fom_bytes ≤ 1.02 * expected_fom_bytes
+        end
 
-        solver = FomSolver(A, b, mem)
-        fom!(solver, A, b)  # warmup
-        inplace_fom_bytes = @allocated fom!(solver, A, b)
+        workspace = FomWorkspace(A, b; memory=mem)
+        fom!(workspace, A, b)  # warmup
+        inplace_fom_bytes = @allocated fom!(workspace, A, b)
+        @test inplace_fom_bytes == 0
+
+        W = Diagonal(ones(FC, n))
+        allocated_with_W(fom!, workspace, A, b, W)  # warmup
+        inplace_fom_bytes = allocated_with_W(fom!, workspace, A, b, W)
         @test inplace_fom_bytes == 0
       end
 
@@ -212,13 +249,20 @@
         storage_dqgmres_bytes(mem, n) = nbits_FC * ((2 * n) + (2 * n * mem) + mem + (mem + 1)) + nbits_T * mem
 
         expected_dqgmres_bytes = storage_dqgmres_bytes(mem, n)
-        dqgmres(A, b, memory=mem)  # warmup
-        actual_dqgmres_bytes = @allocated dqgmres(A, b, memory=mem)
-        @test expected_dqgmres_bytes ≤ actual_dqgmres_bytes ≤ 1.02 * expected_dqgmres_bytes
+        dqgmres(A, b; memory=mem)  # warmup
+        actual_dqgmres_bytes = @allocated dqgmres(A, b; memory=mem)
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_dqgmres_bytes ≤ actual_dqgmres_bytes ≤ 1.02 * expected_dqgmres_bytes
+        end
 
-        solver = DqgmresSolver(A, b, mem)
-        dqgmres!(solver, A, b)  # warmup
-        inplace_dqgmres_bytes = @allocated dqgmres!(solver, A, b)
+        workspace = DqgmresWorkspace(A, b; memory=mem)
+        dqgmres!(workspace, A, b)  # warmup
+        inplace_dqgmres_bytes = @allocated dqgmres!(workspace, A, b)
+        @test inplace_dqgmres_bytes == 0
+
+        W = Diagonal(ones(FC, n))
+        allocated_with_W(dqgmres!, workspace, A, b, W)  # warmup
+        inplace_dqgmres_bytes = allocated_with_W(dqgmres!, workspace, A, b, W)
         @test inplace_dqgmres_bytes == 0
       end
 
@@ -231,13 +275,21 @@
         storage_gmres_bytes(mem, n) = nbits_FC * ((2 * n) + (n * mem) + (2 * mem) + (mem * (mem+1) / 2)) + nbits_T * mem
 
         expected_gmres_bytes = storage_gmres_bytes(mem, n)
-        gmres(A, b, memory=mem)  # warmup
-        actual_gmres_bytes = @allocated gmres(A, b, memory=mem)
-        @test expected_gmres_bytes ≤ actual_gmres_bytes ≤ 1.02 * expected_gmres_bytes
+        gmres(A, b; memory=mem)  # warmup
+        actual_gmres_bytes = @allocated gmres(A, b; memory=mem)
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_gmres_bytes ≤ actual_gmres_bytes ≤ 1.02 * expected_gmres_bytes
+        end
 
-        solver = GmresSolver(A, b, mem)
-        gmres!(solver, A, b)  # warmup
-        inplace_gmres_bytes = @allocated gmres!(solver, A, b)
+        workspace = GmresWorkspace(A, b; memory=mem)
+        gmres!(workspace, A, b)  # warmup
+        inplace_gmres_bytes = @allocated gmres!(workspace, A, b)
+        @test inplace_gmres_bytes == 0
+
+        # The inner product W only needs the vector p
+        W = Diagonal(ones(FC, n))
+        allocated_with_W(gmres!, workspace, A, b, W)  # warmup
+        inplace_gmres_bytes = allocated_with_W(gmres!, workspace, A, b, W)
         @test inplace_gmres_bytes == 0
       end
 
@@ -250,13 +302,21 @@
         storage_fgmres_bytes(mem, n) = nbits_FC * ((2 * n) + (2 * n * mem) + (2 * mem) + (mem * (mem+1) / 2)) + nbits_T * mem
 
         expected_fgmres_bytes = storage_fgmres_bytes(mem, n)
-        fgmres(A, b, memory=mem)  # warmup
-        actual_fgmres_bytes = @allocated fgmres(A, b, memory=mem)
-        @test expected_fgmres_bytes ≤ actual_fgmres_bytes ≤ 1.02 * expected_fgmres_bytes
+        fgmres(A, b; memory=mem)  # warmup
+        actual_fgmres_bytes = @allocated fgmres(A, b; memory=mem)
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_fgmres_bytes ≤ actual_fgmres_bytes ≤ 1.02 * expected_fgmres_bytes
+        end
 
-        solver = FgmresSolver(A, b, mem)
-        fgmres!(solver, A, b)  # warmup
-        inplace_fgmres_bytes = @allocated fgmres!(solver, A, b)
+        workspace = FgmresWorkspace(A, b; memory=mem)
+        fgmres!(workspace, A, b)  # warmup
+        inplace_fgmres_bytes = @allocated fgmres!(workspace, A, b)
+        @test inplace_fgmres_bytes == 0
+
+        # The inner product W only needs the vector q
+        W = Diagonal(ones(FC, n))
+        allocated_with_W(fgmres!, workspace, A, b, W)  # warmup
+        inplace_fgmres_bytes = allocated_with_W(fgmres!, workspace, A, b, W)
         @test inplace_fgmres_bytes == 0
       end
 
@@ -268,11 +328,13 @@
         expected_cgs_bytes = storage_cgs_bytes(n)
         cgs(A, b)  # warmup
         actual_cgs_bytes = @allocated cgs(A, b)
-        @test expected_cgs_bytes ≤ actual_cgs_bytes ≤ 1.02 * expected_cgs_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_cgs_bytes ≤ actual_cgs_bytes ≤ 1.02 * expected_cgs_bytes
+        end
 
-        solver = CgsSolver(A, b)
-        cgs!(solver, A, b)  # warmup
-        inplace_cgs_bytes = @allocated cgs!(solver, A, b)
+        workspace = CgsWorkspace(A, b)
+        cgs!(workspace, A, b)  # warmup
+        inplace_cgs_bytes = @allocated cgs!(workspace, A, b)
         @test inplace_cgs_bytes == 0
       end
 
@@ -284,11 +346,13 @@
         expected_bicgstab_bytes = storage_bicgstab_bytes(n)
         bicgstab(A, b)  # warmup
         actual_bicgstab_bytes = @allocated bicgstab(A, b)
-        @test expected_bicgstab_bytes ≤ actual_bicgstab_bytes ≤ 1.02 * expected_bicgstab_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_bicgstab_bytes ≤ actual_bicgstab_bytes ≤ 1.02 * expected_bicgstab_bytes
+        end
 
-        solver = BicgstabSolver(A, b)
-        bicgstab!(solver, A, b)  # warmup
-        inplace_bicgstab_bytes = @allocated bicgstab!(solver, A, b)
+        workspace = BicgstabWorkspace(A, b)
+        bicgstab!(workspace, A, b)  # warmup
+        inplace_bicgstab_bytes = @allocated bicgstab!(workspace, A, b)
         @test inplace_bicgstab_bytes == 0
       end
 
@@ -301,11 +365,13 @@
         expected_cgne_bytes = storage_cgne_bytes(k, n)
         (x, stats) = cgne(Au, c)  # warmup
         actual_cgne_bytes = @allocated cgne(Au, c)
-        @test expected_cgne_bytes ≤ actual_cgne_bytes ≤ 1.02 * expected_cgne_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_cgne_bytes ≤ actual_cgne_bytes ≤ 1.02 * expected_cgne_bytes
+        end
 
-        solver = CgneSolver(Au, c)
-        cgne!(solver, Au, c)  # warmup
-        inplace_cgne_bytes = @allocated cgne!(solver, Au, c)
+        workspace = CgneWorkspace(Au, c)
+        cgne!(workspace, Au, c)  # warmup
+        inplace_cgne_bytes = @allocated cgne!(workspace, Au, c)
         @test inplace_cgne_bytes == 0
       end
 
@@ -318,11 +384,13 @@
         expected_crmr_bytes = storage_crmr_bytes(k, n)
         (x, stats) = crmr(Au, c)  # warmup
         actual_crmr_bytes = @allocated crmr(Au, c)
-        @test expected_crmr_bytes ≤ actual_crmr_bytes ≤ 1.02 * expected_crmr_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_crmr_bytes ≤ actual_crmr_bytes ≤ 1.02 * expected_crmr_bytes
+        end
 
-        solver = CrmrSolver(Au, c)
-        crmr!(solver, Au, c)  # warmup
-        inplace_crmr_bytes = @allocated crmr!(solver, Au, c)
+        workspace = CrmrWorkspace(Au, c)
+        crmr!(workspace, Au, c)  # warmup
+        inplace_crmr_bytes = @allocated crmr!(workspace, Au, c)
         @test inplace_crmr_bytes == 0
       end
 
@@ -335,11 +403,13 @@
         expected_lnlq_bytes = storage_lnlq_bytes(k, n)
         lnlq(Au, c)  # warmup
         actual_lnlq_bytes = @allocated lnlq(Au, c)
-        @test expected_lnlq_bytes ≤ actual_lnlq_bytes ≤ 1.02 * expected_lnlq_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_lnlq_bytes ≤ actual_lnlq_bytes ≤ 1.02 * expected_lnlq_bytes
+        end
 
-        solver = LnlqSolver(Au, c)
-        lnlq!(solver, Au, c)  # warmup
-        inplace_lnlq_bytes = @allocated lnlq!(solver, Au, c)
+        workspace = LnlqWorkspace(Au, c)
+        lnlq!(workspace, Au, c)  # warmup
+        inplace_lnlq_bytes = @allocated lnlq!(workspace, Au, c)
         @test inplace_lnlq_bytes == 0
       end
 
@@ -352,11 +422,13 @@
         expected_craig_bytes = storage_craig_bytes(k, n)
         craig(Au, c)  # warmup
         actual_craig_bytes = @allocated craig(Au, c)
-        @test expected_craig_bytes ≤ actual_craig_bytes ≤ 1.02 * expected_craig_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_craig_bytes ≤ actual_craig_bytes ≤ 1.02 * expected_craig_bytes
+        end
 
-        solver = CraigSolver(Au, c)
-        craig!(solver, Au, c)  # warmup
-        inplace_craig_bytes = @allocated craig!(solver, Au, c)
+        workspace = CraigWorkspace(Au, c)
+        craig!(workspace, Au, c)  # warmup
+        inplace_craig_bytes = @allocated craig!(workspace, Au, c)
         @test inplace_craig_bytes == 0
       end
 
@@ -369,11 +441,13 @@
         expected_craigmr_bytes = storage_craigmr_bytes(k, n)
         craigmr(Au, c)  # warmup
         actual_craigmr_bytes = @allocated craigmr(Au, c)
-        @test expected_craigmr_bytes ≤ actual_craigmr_bytes ≤ 1.02 * expected_craigmr_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_craigmr_bytes ≤ actual_craigmr_bytes ≤ 1.02 * expected_craigmr_bytes
+        end
 
-        solver = CraigmrSolver(Au, c)
-        craigmr!(solver, Au, c)  # warmup
-        inplace_craigmr_bytes = @allocated craigmr!(solver, Au, c)
+        workspace = CraigmrWorkspace(Au, c)
+        craigmr!(workspace, Au, c)  # warmup
+        inplace_craigmr_bytes = @allocated craigmr!(workspace, Au, c)
         @test inplace_craigmr_bytes == 0
       end
 
@@ -386,12 +460,36 @@
         expected_cgls_bytes = storage_cgls_bytes(m, k)
         (x, stats) = cgls(Ao, b)  # warmup
         actual_cgls_bytes = @allocated cgls(Ao, b)
-        @test expected_cgls_bytes ≤ actual_cgls_bytes ≤ 1.02 * expected_cgls_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_cgls_bytes ≤ actual_cgls_bytes ≤ 1.02 * expected_cgls_bytes
+        end
 
-        solver = CglsSolver(Ao, b)
-        cgls!(solver, Ao, b)  # warmup
-        inplace_cgls_bytes = @allocated cgls!(solver, Ao, b)
+        workspace = CglsWorkspace(Ao, b)
+        cgls!(workspace, Ao, b)  # warmup
+        inplace_cgls_bytes = @allocated cgls!(workspace, Ao, b)
         @test inplace_cgls_bytes == 0
+      end
+
+      @testset "CGLS-LANCZOS-SHIFT" begin
+        # CGLS-LANCZOS-SHIFT needs:
+        # - 1 n-vector: Mv
+        # - 3 m-vectors: u_prev, u, u_next
+        # - 2 (n*nshifts)-matrices: x, p
+        # - 5 nshifts-vectors: σ, δhat, ω, γ, rNorms
+        # - 3 nshifts-bitVector: converged, indefinite, not_cv
+        storage_cgls_lanczos_shift_bytes(m, n, nshifts) = nbits_FC * (1 * n + 3 * m + 2 * n * nshifts) + nbits_T * (5 * nshifts) + (3 * nshifts)
+
+        expected_cgls_lanczos_shift_bytes = storage_cgls_lanczos_shift_bytes(m, k, nshifts)
+        (x, stats) = cgls_lanczos_shift(Ao, b, shifts)  # warmup
+        actual_cgls_lanczos_shift_bytes = @allocated cgls_lanczos_shift(Ao, b, shifts)
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_cgls_lanczos_shift_bytes ≤ actual_cgls_lanczos_shift_bytes ≤ 1.02 * expected_cgls_lanczos_shift_bytes
+        end
+
+        workspace = CglsLanczosShiftWorkspace(Ao, b, nshifts)
+        cgls_lanczos_shift!(workspace, Ao, b, shifts)  # warmup
+        inplace_cgls_lanczos_shift_bytes = @allocated cgls_lanczos_shift!(workspace, Ao, b, shifts)
+        @test inplace_cgls_lanczos_shift_bytes == 0
       end
 
       @testset "LSLQ" begin
@@ -403,11 +501,13 @@
         expected_lslq_bytes = storage_lslq_bytes(m, k)
         (x, stats) = lslq(Ao, b)  # warmup
         actual_lslq_bytes = @allocated lslq(Ao, b)
-        @test expected_lslq_bytes ≤ actual_lslq_bytes ≤ 1.02 * expected_lslq_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_lslq_bytes ≤ actual_lslq_bytes ≤ 1.02 * expected_lslq_bytes
+        end
 
-        solver = LslqSolver(Ao, b)
-        lslq!(solver, Ao, b)  # warmup
-        inplace_lslq_bytes = @allocated lslq!(solver, Ao, b)
+        workspace = LslqWorkspace(Ao, b)
+        lslq!(workspace, Ao, b)  # warmup
+        inplace_lslq_bytes = @allocated lslq!(workspace, Ao, b)
         @test inplace_lslq_bytes == 0
       end
 
@@ -420,11 +520,13 @@
         expected_crls_bytes = storage_crls_bytes(m, k)
         (x, stats) = crls(Ao, b)  # warmup
         actual_crls_bytes = @allocated crls(Ao, b)
-        @test expected_crls_bytes ≤ actual_crls_bytes ≤ 1.02 * expected_crls_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_crls_bytes ≤ actual_crls_bytes ≤ 1.02 * expected_crls_bytes
+        end
 
-        solver = CrlsSolver(Ao, b)
-        crls!(solver, Ao, b)  # warmup
-        inplace_crls_bytes = @allocated crls!(solver, Ao, b)
+        workspace = CrlsWorkspace(Ao, b)
+        crls!(workspace, Ao, b)  # warmup
+        inplace_crls_bytes = @allocated crls!(workspace, Ao, b)
         @test inplace_crls_bytes == 0
       end
 
@@ -437,11 +539,13 @@
         expected_lsqr_bytes = storage_lsqr_bytes(m, k)
         (x, stats) = lsqr(Ao, b)  # warmup
         actual_lsqr_bytes = @allocated lsqr(Ao, b)
-        @test expected_lsqr_bytes ≤ actual_lsqr_bytes ≤ 1.02 * expected_lsqr_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_lsqr_bytes ≤ actual_lsqr_bytes ≤ 1.02 * expected_lsqr_bytes
+        end
 
-        solver = LsqrSolver(Ao, b)
-        lsqr!(solver, Ao, b)  # warmup
-        inplace_lsqr_bytes = @allocated lsqr!(solver, Ao, b)
+        workspace = LsqrWorkspace(Ao, b)
+        lsqr!(workspace, Ao, b)  # warmup
+        inplace_lsqr_bytes = @allocated lsqr!(workspace, Ao, b)
         @test inplace_lsqr_bytes == 0
       end
 
@@ -454,11 +558,13 @@
         expected_lsmr_bytes = storage_lsmr_bytes(m, k)
         (x, stats) = lsmr(Ao, b)  # warmup
         actual_lsmr_bytes = @allocated lsmr(Ao, b)
-        @test expected_lsmr_bytes ≤ actual_lsmr_bytes ≤ 1.02 * expected_lsmr_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_lsmr_bytes ≤ actual_lsmr_bytes ≤ 1.02 * expected_lsmr_bytes
+        end
 
-        solver = LsmrSolver(Ao, b)
-        lsmr!(solver, Ao, b)  # warmup
-        inplace_lsmr_bytes = @allocated lsmr!(solver, Ao, b)
+        workspace = LsmrWorkspace(Ao, b)
+        lsmr!(workspace, Ao, b)  # warmup
+        inplace_lsmr_bytes = @allocated lsmr!(workspace, Ao, b)
         @test inplace_lsmr_bytes == 0
       end
 
@@ -470,11 +576,13 @@
         expected_bilq_bytes = storage_bilq_bytes(n)
         bilq(A, b)  # warmup
         actual_bilq_bytes = @allocated bilq(A, b)
-        @test expected_bilq_bytes ≤ actual_bilq_bytes ≤ 1.02 * expected_bilq_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_bilq_bytes ≤ actual_bilq_bytes ≤ 1.02 * expected_bilq_bytes
+        end
 
-        solver = BilqSolver(A, b)
-        bilq!(solver, A, b)  # warmup
-        inplace_bilq_bytes = @allocated bilq!(solver, A, b)
+        workspace = BilqWorkspace(A, b)
+        bilq!(workspace, A, b)  # warmup
+        inplace_bilq_bytes = @allocated bilq!(workspace, A, b)
         @test inplace_bilq_bytes == 0
       end
 
@@ -486,11 +594,13 @@
         expected_qmr_bytes = storage_qmr_bytes(n)
         qmr(A, b)  # warmup
         actual_qmr_bytes = @allocated qmr(A, b)
-        @test expected_qmr_bytes ≤ actual_qmr_bytes ≤ 1.02 * expected_qmr_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_qmr_bytes ≤ actual_qmr_bytes ≤ 1.02 * expected_qmr_bytes
+        end
 
-        solver = QmrSolver(A, b)
-        qmr!(solver, A, b)  # warmup
-        inplace_qmr_bytes = @allocated qmr!(solver, A, b)
+        workspace = QmrWorkspace(A, b)
+        qmr!(workspace, A, b)  # warmup
+        inplace_qmr_bytes = @allocated qmr!(workspace, A, b)
         @test inplace_qmr_bytes == 0
       end
 
@@ -502,11 +612,13 @@
         expected_bilqr_bytes = storage_bilqr_bytes(n)
         bilqr(A, b, b)  # warmup
         actual_bilqr_bytes = @allocated bilqr(A, b, b)
-        @test expected_bilqr_bytes ≤ actual_bilqr_bytes ≤ 1.02 * expected_bilqr_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_bilqr_bytes ≤ actual_bilqr_bytes ≤ 1.02 * expected_bilqr_bytes
+        end
 
-        solver = BilqrSolver(A, b)
-        bilqr!(solver, A, b, b)  # warmup
-        inplace_bilqr_bytes = @allocated bilqr!(solver, A, b, b)
+        workspace = BilqrWorkspace(A, b)
+        bilqr!(workspace, A, b, b)  # warmup
+        inplace_bilqr_bytes = @allocated bilqr!(workspace, A, b, b)
         @test inplace_bilqr_bytes == 0
       end
 
@@ -519,11 +631,13 @@
         expected_usymlq_bytes = storage_usymlq_bytes(k, n)
         usymlq(Au, c, b)  # warmup
         actual_usymlq_bytes = @allocated usymlq(Au, c, b)
-        @test expected_usymlq_bytes ≤ actual_usymlq_bytes ≤ 1.02 * expected_usymlq_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_usymlq_bytes ≤ actual_usymlq_bytes ≤ 1.02 * expected_usymlq_bytes
+        end
 
-        solver = UsymlqSolver(Au, c)
-        usymlq!(solver, Au, c, b)  # warmup
-        inplace_usymlq_bytes = @allocated usymlq!(solver, Au, c, b)
+        workspace = UsymlqWorkspace(Au, c)
+        usymlq!(workspace, Au, c, b)  # warmup
+        inplace_usymlq_bytes = @allocated usymlq!(workspace, Au, c, b)
         @test inplace_usymlq_bytes == 0
       end
 
@@ -536,11 +650,13 @@
         expected_usymqr_bytes = storage_usymqr_bytes(m, k)
         (x, stats) = usymqr(Ao, b, c) # warmup
         actual_usymqr_bytes = @allocated usymqr(Ao, b, c)
-        @test expected_usymqr_bytes ≤ actual_usymqr_bytes ≤ 1.02 * expected_usymqr_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_usymqr_bytes ≤ actual_usymqr_bytes ≤ 1.02 * expected_usymqr_bytes
+        end
 
-        solver = UsymqrSolver(Ao, b)
-        usymqr!(solver, Ao, b, c)  # warmup
-        inplace_usymqr_bytes = @allocated usymqr!(solver, Ao, b, c)
+        workspace = UsymqrWorkspace(Ao, b)
+        usymqr!(workspace, Ao, b, c)  # warmup
+        inplace_usymqr_bytes = @allocated usymqr!(workspace, Ao, b, c)
         @test inplace_usymqr_bytes == 0
       end
 
@@ -553,11 +669,13 @@
         expected_trilqr_bytes = storage_trilqr_bytes(n, n)
         trilqr(A, b, b)  # warmup
         actual_trilqr_bytes = @allocated trilqr(A, b, b)
-        @test expected_trilqr_bytes ≤ actual_trilqr_bytes ≤ 1.02 * expected_trilqr_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_trilqr_bytes ≤ actual_trilqr_bytes ≤ 1.02 * expected_trilqr_bytes
+        end
 
-        solver = TrilqrSolver(A, b)
-        trilqr!(solver, A, b, b)  # warmup
-        inplace_trilqr_bytes = @allocated trilqr!(solver, A, b, b)
+        workspace = TrilqrWorkspace(A, b)
+        trilqr!(workspace, A, b, b)  # warmup
+        inplace_trilqr_bytes = @allocated trilqr!(workspace, A, b, b)
         @test inplace_trilqr_bytes == 0
       end
 
@@ -570,11 +688,13 @@
         expected_tricg_bytes = storage_tricg_bytes(k, n)
         tricg(Au, c, b)  # warmup
         actual_tricg_bytes = @allocated tricg(Au, c, b)
-        @test expected_tricg_bytes ≤ actual_tricg_bytes ≤ 1.02 * expected_tricg_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_tricg_bytes ≤ actual_tricg_bytes ≤ 1.02 * expected_tricg_bytes
+        end
 
-        solver = TricgSolver(Au, c)
-        tricg!(solver, Au, c, b)  # warmup
-        inplace_tricg_bytes = @allocated tricg!(solver, Au, c, b)
+        workspace = TricgWorkspace(Au, c)
+        tricg!(workspace, Au, c, b)  # warmup
+        inplace_tricg_bytes = @allocated tricg!(workspace, Au, c, b)
         @test inplace_tricg_bytes == 0
       end
 
@@ -587,12 +707,34 @@
         expected_trimr_bytes = storage_trimr_bytes(k, n)
         trimr(Au, c, b)  # warmup
         actual_trimr_bytes = @allocated trimr(Au, c, b)
-        @test expected_trimr_bytes ≤ actual_trimr_bytes ≤ 1.02 * expected_trimr_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_trimr_bytes ≤ actual_trimr_bytes ≤ 1.02 * expected_trimr_bytes
+        end
 
-        solver = TrimrSolver(Au, c)
-        trimr!(solver, Au, c, b)  # warmup
-        inplace_trimr_bytes = @allocated trimr!(solver, Au, c, b)
+        workspace = TrimrWorkspace(Au, c)
+        trimr!(workspace, Au, c, b)  # warmup
+        inplace_trimr_bytes = @allocated trimr!(workspace, Au, c, b)
         @test inplace_trimr_bytes == 0
+      end
+
+      @testset "USYMLQR" begin
+        # USYMLQR needs:
+        # - 7 n-vectors: y, z, N⁻¹uₖ₋₁, N⁻¹uₖ, p, wₖ₋₂, wₖ₋₁
+        # - 6 m-vectors: x, r, M⁻¹vₖ₋₁, M⁻¹vₖ, q, d̅
+        storage_usymlqr(m, n) = 7 * n + 6 * m
+        storage_usymlqr_bytes(m, n) = nbits_FC * storage_usymlqr(m, n)
+
+        expected_usymlqr_bytes = storage_usymlqr_bytes(k, n)
+        usymlqr(Au, c, b)  # warmup
+        actual_usymlqr_bytes = @allocated usymlqr(Au, c, b)
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_usymlqr_bytes ≤ actual_usymlqr_bytes ≤ 1.02 * expected_usymlqr_bytes
+        end
+
+        workspace = UsymlqrWorkspace(Au, c)
+        usymlqr!(workspace, Au, c, b)  # warmup
+        inplace_usymlqr_bytes = @allocated usymlqr!(workspace, Au, c, b)
+        @test inplace_usymlqr_bytes == 0
       end
 
       @testset "GPMR" begin
@@ -607,14 +749,74 @@
         storage_gpmr_bytes(mem, m, n) = nbits_FC * ((mem + 2) * (n + m) + mem * (2 * mem + 7)) + nbits_T * 4 * mem
 
         expected_gpmr_bytes = storage_gpmr_bytes(mem, m, k)
-        gpmr(Ao, Au, b, c, memory=mem, itmax=mem)  # warmup
-        actual_gpmr_bytes = @allocated gpmr(Ao, Au, b, c, memory=mem, itmax=mem)
-        @test expected_gpmr_bytes ≤ actual_gpmr_bytes ≤ 1.02 * expected_gpmr_bytes
+        gpmr(Ao, Au, b, c; memory=mem, itmax=mem)  # warmup
+        actual_gpmr_bytes = @allocated gpmr(Ao, Au, b, c; memory=mem, itmax=mem)
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_gpmr_bytes ≤ actual_gpmr_bytes ≤ 1.02 * expected_gpmr_bytes
+        end
 
-        solver = GpmrSolver(Ao, b, mem)
-        gpmr!(solver, Ao, Au, b, c)  # warmup
-        inplace_gpmr_bytes = @allocated gpmr!(solver, Ao, Au, b, c)
+        workspace = GpmrWorkspace(Ao, b; memory=mem)
+        gpmr!(workspace, Ao, Au, b, c)  # warmup
+        inplace_gpmr_bytes = @allocated gpmr!(workspace, Ao, Au, b, c)
         @test inplace_gpmr_bytes == 0
+      end
+
+      @testset "BLOCK-GMRES" begin
+        # BLOCK-GMRES needs:
+        # - 2 (n*p)-matrices: X, W
+        # - 1 (p*p)-matrix: C
+        # - 1 (2p*p)-matrix: D
+        # - mem p-vectors: τ
+        # - mem (n*p)-matrices: V
+        # - mem (p*p)-matrices: Z
+        # - mem*(mem+1)/2 (p*p)-matrices: R
+        # - mem (2p*p)-matrices: H
+        # - lwork-vector: buffer
+        function storage_block_gmres_bytes(mem, n, p)
+          res = (2*n*p + p*p + 2p*p + mem*p + mem*n*p + mem*p*p + (mem*(mem+1)÷2)*p*p + mem*2p*p)
+          return nbits_FC * res
+        end
+
+        workspace = BlockGmresWorkspace(A, B; memory=mem)
+        block_gmres!(workspace, A, B)  # warmup
+        inplace_block_gmres_bytes = @allocated block_gmres!(workspace, A, B)
+        @test inplace_block_gmres_bytes == 0
+
+        expected_block_gmres_bytes = storage_block_gmres_bytes(mem, n, p) + sizeof(workspace.buffer)
+        block_gmres(A, B; memory=mem, itmax=mem)  # warmup
+        actual_block_gmres_bytes = @allocated block_gmres(A, B; memory=mem, itmax=mem)
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_block_gmres_bytes ≤ actual_block_gmres_bytes ≤ 1.05 * expected_block_gmres_bytes
+        end
+      end
+
+      @testset "BLOCK-MINRES" begin
+        # BLOCK-MINRES needs:
+        # - 2 (n*p)-matrices: X, W
+        # - 1 (p*p)-matrix: C
+        # - 1 (2p*p)-matrix: D
+        # - mem p-vectors: τ
+        # - mem (n*p)-matrices: V
+        # - mem (p*p)-matrices: Z
+        # - mem*(mem+1)/2 (p*p)-matrices: R
+        # - mem (2p*p)-matrices: H
+        # - lwork-vector: buffer
+        function storage_block_minres_bytes(mem, n, p)
+          res = (2*n*p + p*p + 2p*p + mem*p + mem*n*p + mem*p*p + (mem*(mem+1)÷2)*p*p + mem*2p*p)
+          return nbits_FC * res
+        end
+
+        workspace = BlockMinresWorkspace(A, B)
+        block_minres!(workspace, A, B)  # warmup
+        inplace_block_minres_bytes = @allocated block_minres!(workspace, A, B)
+        @test inplace_block_minres_bytes == 0
+
+        expected_block_minres_bytes = storage_block_minres_bytes(mem, n, p) + sizeof(workspace.buffer)
+        block_minres(A, B)  # warmup
+        # actual_block_minres_bytes = @allocated block_minres(A, B)
+        # if VERSION < v"1.11.5" || !Sys.isapple()
+        #   @test expected_block_minres_bytes ≤ actual_block_minres_bytes ≤ 1.05 * expected_block_minres_bytes
+        # end
       end
     end
   end

@@ -2,22 +2,22 @@
 
 | **Documentation** | **CI** | **Coverage** | **DOI** | **Downloads** |
 |:-----------------:|:------:|:------------:|:-------:|:-------------:|
-| [![docs-stable][docs-stable-img]][docs-stable-url] [![docs-dev][docs-dev-img]][docs-dev-url] | [![build-gh][build-gh-img]][build-gh-url] [![build-cirrus][build-cirrus-img]][build-cirrus-url] | [![codecov][codecov-img]][codecov-url] | [![doi][doi-img]][doi-url] | [![downloads][downloads-img]][downloads-url] |
+| [![docs-stable][docs-stable-img]][docs-stable-url] [![docs-dev][docs-dev-img]][docs-dev-url] | [![build-gh][build-gh-img]][build-gh-url] | [![codecov][codecov-img]][codecov-url] | [![doi][doi-img]][doi-url] | [![downloads][downloads-img]][downloads-url] |
 
 [docs-stable-img]: https://img.shields.io/badge/docs-stable-blue.svg
 [docs-stable-url]: https://JuliaSmoothOptimizers.github.io/Krylov.jl/stable
 [docs-dev-img]: https://img.shields.io/badge/docs-dev-purple.svg
 [docs-dev-url]: https://JuliaSmoothOptimizers.github.io/Krylov.jl/dev
-[build-gh-img]: https://github.com/JuliaSmoothOptimizers/Krylov.jl/workflows/CI/badge.svg?branch=main
-[build-gh-url]: https://github.com/JuliaSmoothOptimizers/Krylov.jl/actions
+[build-gh-img]: https://github.com/JuliaSmoothOptimizers/Krylov.jl/actions/workflows/ci.yml/badge.svg
+[build-gh-url]: https://github.com/JuliaSmoothOptimizers/Krylov.jl/actions/workflows/ci.yml
 [build-cirrus-img]: https://img.shields.io/cirrus/github/JuliaSmoothOptimizers/Krylov.jl?logo=Cirrus%20CI
 [build-cirrus-url]: https://cirrus-ci.com/github/JuliaSmoothOptimizers/Krylov.jl
 [codecov-img]: https://codecov.io/gh/JuliaSmoothOptimizers/Krylov.jl/branch/main/graph/badge.svg
 [codecov-url]: https://app.codecov.io/gh/JuliaSmoothOptimizers/Krylov.jl
 [doi-img]: https://joss.theoj.org/papers/10.21105/joss.05187/status.svg
 [doi-url]: https://doi.org/10.21105/joss.05187
-[downloads-img]: https://shields.io/endpoint?url=https://pkgs.genieframework.com/api/v1/badge/Krylov
-[downloads-url]: https://pkgs.genieframework.com?packages=Krylov
+[downloads-img]: https://img.shields.io/badge/dynamic/json?url=http%3A%2F%2Fjuliapkgstats.com%2Fapi%2Fv1%2Fmonthly_downloads%2FKrylov&query=total_requests&suffix=%2Fmonth&label=Downloads
+[downloads-url]: https://juliapkgstats.com/pkg/Krylov
 
 ## How to Cite
 
@@ -126,6 +126,10 @@ Iterative methods are recommended in either of the following situations:
 ## Features
 
 All solvers in Krylov.jl have in-place version, are compatible with **GPU** and work in any floating-point data type.
+
+Krylov.jl also provides **C and Fortran interfaces** and a shared library (`libkrylov`).
+See the [C and Fortran interfaces](https://jso.dev/Krylov.jl/dev/interfaces/overview/) documentation for the API, examples, and build instructions.
+Pre-built artifacts are available on the [Releases](https://github.com/JuliaSmoothOptimizers/Krylov.jl/releases) page.
 
 ## How to Install
 

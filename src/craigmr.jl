@@ -32,7 +32,7 @@ export craigmr, craigmr!
                             sqd::Bool=false, λ::T=zero(T), atol::T=√eps(T),
                             rtol::T=√eps(T), itmax::Int=0,
                             timemax::Float64=Inf, verbose::Int=0, history::Bool=false,
-                            callback=solver->false, iostream::IO=kstdout)
+                            callback=workspace->false, iostream::IO=kstdout)
 
 `T` is an `AbstractFloat` such as `Float32`, `Float64` or `BigFloat`.
 `FC` is `T` or `Complex{T}`.
@@ -83,10 +83,16 @@ It is formally equivalent to CRMR, though can be slightly more accurate,
 and intricate to implement. Both the x- and y-parts of the solution are
 returned.
 
+#### Interface
+
+To easily switch between Krylov methods, use the generic interface [`krylov_solve`](@ref) with `method = :craigmr`.
+
+For an in-place variant that reuses memory across solves, see [`craigmr!`](@ref).
+
 #### Input arguments
 
-* `A`: a linear operator that models a matrix of dimension m × n;
-* `b`: a vector of length m.
+* `A`: a linear operator that models a matrix of dimension `m × n`;
+* `b`: a vector of length `m`.
 
 #### Keyword arguments
 
@@ -101,13 +107,13 @@ returned.
 * `timemax`: the time limit in seconds;
 * `verbose`: additional details can be displayed if verbose mode is enabled (verbose > 0). Information will be displayed every `verbose` iterations;
 * `history`: collect additional statistics on the run such as residual norms, or Aᴴ-residual norms;
-* `callback`: function or functor called as `callback(solver)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
+* `callback`: function or functor called as `callback(workspace)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
 * `iostream`: stream to which output is logged.
 
 #### Output arguments
 
-* `x`: a dense vector of length n;
-* `y`: a dense vector of length m;
+* `x`: a dense vector of length `n`;
+* `y`: a dense vector of length `m`;
 * `stats`: statistics collected on the run in a [`SimpleStats`](@ref) structure.
 
 #### References
@@ -118,55 +124,48 @@ returned.
 function craigmr end
 
 """
-    solver = craigmr!(solver::CraigmrSolver, A, b; kwargs...)
+    workspace = craigmr!(workspace::CraigmrWorkspace, A, b; kwargs...)
 
-where `kwargs` are keyword arguments of [`craigmr`](@ref).
+In this call, `kwargs` are keyword arguments of [`craigmr`](@ref).
 
-See [`CraigmrSolver`](@ref) for more details about the `solver`.
+See [`CraigmrWorkspace`](@ref) for instructions on how to create the `workspace`.
+
+For a more generic interface, you can use [`krylov_workspace`](@ref) with `method = :craigmr` to allocate the workspace,
+and [`krylov_solve!`](@ref) to run the Krylov method in-place.
 """
 function craigmr! end
 
 def_args_craigmr = (:(A                    ),
                     :(b::AbstractVector{FC}))
 
-def_kwargs_craigmr = (:(; M = I                     ),
-                      :(; N = I                     ),
-                      :(; ldiv::Bool = false        ),
-                      :(; sqd::Bool = false         ),
-                      :(; λ::T = zero(T)            ),
-                      :(; atol::T = √eps(T)         ),
-                      :(; rtol::T = √eps(T)         ),
-                      :(; itmax::Int = 0            ),
-                      :(; timemax::Float64 = Inf    ),
-                      :(; verbose::Int = 0          ),
-                      :(; history::Bool = false     ),
-                      :(; callback = solver -> false),
-                      :(; iostream::IO = kstdout    ))
+def_kwargs_craigmr = (:(; M = I                        ),
+                      :(; N = I                        ),
+                      :(; ldiv::Bool = false           ),
+                      :(; sqd::Bool = false            ),
+                      :(; λ::T = zero(T)               ),
+                      :(; atol::T = √eps(T)            ),
+                      :(; rtol::T = √eps(T)            ),
+                      :(; itmax::Int = 0               ),
+                      :(; timemax::Float64 = Inf       ),
+                      :(; verbose::Int = 0             ),
+                      :(; history::Bool = false        ),
+                      :(; callback = workspace -> false),
+                      :(; iostream::IO = kstdout       ))
 
-def_kwargs_craigmr = mapreduce(extract_parameters, vcat, def_kwargs_craigmr)
+def_kwargs_craigmr = extract_parameters.(def_kwargs_craigmr)
 
 args_craigmr = (:A, :b)
 kwargs_craigmr = (:M, :N, :ldiv, :sqd, :λ, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback, :iostream)
 
 @eval begin
-  function craigmr($(def_args_craigmr...); $(def_kwargs_craigmr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = CraigmrSolver(A, b)
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    craigmr!(solver, $(args_craigmr...); $(kwargs_craigmr...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.y, solver.stats)
-  end
-
-  function craigmr!(solver :: CraigmrSolver{T,FC,S}, $(def_args_craigmr...); $(def_kwargs_craigmr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
+  function craigmr!(workspace :: CraigmrWorkspace{T,FC,Sm,Sn}, $(def_args_craigmr...); $(def_kwargs_craigmr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, Sm <: AbstractVector{FC}, Sn <: AbstractVector{FC}}
 
     # Timer
     start_time = time_ns()
     timemax_ns = 1e9 * timemax
 
     m, n = size(A)
-    (m == solver.m && n == solver.n) || error("(solver.m, solver.n) = ($(solver.m), $(solver.n)) is inconsistent with size(A) = ($m, $n)")
+    (m == workspace.m && n == workspace.n) || error("(workspace.m, workspace.n) = ($(workspace.m), $(workspace.n)) is inconsistent with size(A) = ($m, $n)")
     length(b) == m || error("Inconsistent problem size")
     (verbose > 0) && @printf(iostream, "CRAIGMR: system of %d equations in %d variables\n", m, n)
 
@@ -180,54 +179,54 @@ kwargs_craigmr = (:M, :N, :ldiv, :sqd, :λ, :atol, :rtol, :itmax, :timemax, :ver
 
     # Check type consistency
     eltype(A) == FC || @warn "eltype(A) ≠ $FC. This could lead to errors or additional allocations in operator-vector products."
-    ktypeof(b) <: S || error("ktypeof(b) is not a subtype of $S")
+    ktypeof(b) == Sm || error("ktypeof(b) must be equal to $Sm")
 
     # Compute the adjoint of A
     Aᴴ = A'
 
     # Set up workspace.
-    allocate_if(!MisI, solver, :u, S, m)
-    allocate_if(!NisI, solver, :v, S, n)
-    allocate_if(λ > 0, solver, :q, S, n)
-    x, Nv, Aᴴu, d, y, Mu = solver.x, solver.Nv, solver.Aᴴu, solver.d, solver.y, solver.Mu
-    w, wbar, Av, q, stats = solver.w, solver.wbar, solver.Av, solver.q, solver.stats
+    allocate_if(!MisI, workspace, :u, Sm, workspace.y)  # The length of u is m
+    allocate_if(!NisI, workspace, :v, Sn, workspace.x)  # The length of v is n
+    allocate_if(λ > 0, workspace, :q, Sn, workspace.x)  # The length of q is n
+    x, Nv, Aᴴu, d, y, Mu = workspace.x, workspace.Nv, workspace.Aᴴu, workspace.d, workspace.y, workspace.Mu
+    w, wbar, Av, q, stats = workspace.w, workspace.wbar, workspace.Av, workspace.q, workspace.stats
     rNorms, ArNorms = stats.residuals, stats.Aresiduals
     reset!(stats)
-    u = MisI ? Mu : solver.u
-    v = NisI ? Nv : solver.v
+    u = MisI ? Mu : workspace.u
+    v = NisI ? Nv : workspace.v
 
     # Compute y such that AAᴴy = b. Then recover x = Aᴴy.
-    x .= zero(FC)
-    y .= zero(FC)
-    Mu .= b
+    kfill!(x, zero(FC))
+    kfill!(y, zero(FC))
+    kcopy!(m, Mu, b)  # Mu ← b
     MisI || mulorldiv!(u, M, Mu, ldiv)
-    β = sqrt(@kdotr(m, u, Mu))
+    β = knorm_elliptic(m, u, Mu)
     if β == 0
       stats.niter = 0
       stats.solved, stats.inconsistent = true, false
       history && push!(rNorms, β)
       history && push!(ArNorms, zero(T))
-      stats.timer = ktimer(start_time)
-      stats.status = "x = 0 is a zero-residual solution"
-      return solver
+      stats.timer = start_time |> ktimer
+      stats.status = "x is a zero-residual solution"
+      return workspace
     end
 
     # Initialize Golub-Kahan process.
     # β₁Mu₁ = b.
-    @kscal!(m, one(FC)/β, u)
-    MisI || @kscal!(m, one(FC)/β, Mu)
+    kdiv!(m, u, β)
+    MisI || kdiv!(m, Mu, β)
     # α₁Nv₁ = Aᴴu₁.
-    mul!(Aᴴu, Aᴴ, u)
-    Nv .= Aᴴu
+    kmul!(Aᴴu, Aᴴ, u)
+    kcopy!(n, Nv, Aᴴu)  # Nv ← Aᴴu
     NisI || mulorldiv!(v, N, Nv, ldiv)
-    α = sqrt(@kdotr(n, v, Nv))
+    α = knorm_elliptic(n, v, Nv)
     Anorm² = α * α
 
     iter = 0
     itmax == 0 && (itmax = m + n)
 
     (verbose > 0) && @printf(iostream, "%5s  %7s  %7s  %7s  %7s  %8s  %8s  %7s  %5s\n", "k", "‖r‖", "‖Aᴴr‖", "β", "α", "cos", "sin", "‖A‖²", "timer")
-    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %7.1e  %8.1e  %8.1e  %7.1e  %.2fs\n", iter, β, α, β, α, 0, 1, Anorm², ktimer(start_time))
+    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %7.1e  %8.1e  %8.1e  %7.1e  %.2fs\n", iter, β, α, β, α, 0, 1, Anorm², start_time |> ktimer)
 
     # Aᴴb = 0 so x = 0 is a minimum least-squares solution
     if α == 0
@@ -235,22 +234,22 @@ kwargs_craigmr = (:M, :N, :ldiv, :sqd, :λ, :atol, :rtol, :itmax, :timemax, :ver
       stats.solved, stats.inconsistent = true, false
       history && push!(rNorms, β)
       history && push!(ArNorms, zero(T))
-      stats.timer = ktimer(start_time)
-      stats.status = "x = 0 is a minimum least-squares solution"
-      return solver
+      stats.timer = start_time |> ktimer
+      stats.status = "x is a minimum least-squares solution"
+      return workspace
     end
-    @kscal!(n, one(FC)/α, v)
-    NisI || @kscal!(n, one(FC)/α, Nv)
+    kdiv!(n, v, α)
+    NisI || kdiv!(n, Nv, α)
 
     # Regularization.
-    λₖ  = λ             # λ₁ = λ
-    cpₖ = spₖ = one(T)  # Givens sines and cosines used to zero out λₖ
-    cdₖ = sdₖ = one(T)  # Givens sines and cosines used to define λₖ₊₁
-    λ > 0 && (q .= v)   # Additional vector needed to update x, by definition q₀ = 0
+    λₖ  = λ                   # λ₁ = λ
+    cpₖ = spₖ = one(T)        # Givens sines and cosines used to zero out λₖ
+    cdₖ = sdₖ = one(T)        # Givens sines and cosines used to define λₖ₊₁
+    λ > 0 && kcopy!(n, q, v)  # Additional vector needed to update x, by definition q₀ = 0
 
     if λ > 0
       (cpₖ, spₖ, αhat) = sym_givens(α, λₖ)
-      @kscal!(n, spₖ, q)  # q̄₁ = sp₁ * v₁
+      kscal!(n, spₖ, q)  # q̄₁ = sp₁ * v₁
     else
       αhat = α
     end
@@ -264,13 +263,12 @@ kwargs_craigmr = (:M, :N, :ldiv, :sqd, :λ, :atol, :rtol, :itmax, :timemax, :ver
     ArNorm = α
     history && push!(ArNorms, ArNorm)
 
-    ɛ_c = atol + rtol * rNorm  # Stopping tolerance for consistent systems.
+    ɛ_c = atol + rtol * rNorm   # Stopping tolerance for consistent systems.
     ɛ_i = atol + rtol * ArNorm  # Stopping tolerance for inconsistent systems.
 
-    wbar .= u
-    @kscal!(m, one(FC)/αhat, wbar)
-    w .= zero(FC)
-    d .= zero(FC)
+    kdivcopy!(m, wbar, u, αhat)
+    kfill!(w, zero(FC))
+    kfill!(d, zero(FC))
 
     status = "unknown"
     solved = rNorm ≤ ɛ_c
@@ -284,13 +282,13 @@ kwargs_craigmr = (:M, :N, :ldiv, :sqd, :λ, :atol, :rtol, :itmax, :timemax, :ver
 
       # Generate next Golub-Kahan vectors.
       # 1. βₖ₊₁Muₖ₊₁ = Avₖ - αₖMuₖ
-      mul!(Av, A, v)
-      @kaxpby!(m, one(FC), Av, -α, Mu)
+      kmul!(Av, A, v)
+      kaxpby!(m, one(FC), Av, -α, Mu)
       MisI || mulorldiv!(u, M, Mu, ldiv)
-      β = sqrt(@kdotr(m, u, Mu))
+      β = knorm_elliptic(m, u, Mu)
       if β ≠ 0
-        @kscal!(m, one(FC)/β, u)
-        MisI || @kscal!(m, one(FC)/β, Mu)
+        kdiv!(m, u, β)
+        MisI || kdiv!(m, Mu, β)
       end
 
       Anorm² = Anorm² + β * β  # = ‖B_{k-1}‖²
@@ -321,58 +319,58 @@ kwargs_craigmr = (:M, :N, :ldiv, :sqd, :λ, :atol, :rtol, :itmax, :timemax, :ver
       rNorm = abs(ζbar)
       history && push!(rNorms, rNorm)
 
-      @kaxpby!(m, one(FC)/ρ, wbar, -θ/ρ, w)  # w = (wbar - θ * w) / ρ
-      @kaxpy!(m, ζ, w, y)                    # y = y + ζ * w
+      kaxpby!(m, one(FC)/ρ, wbar, -θ/ρ, w)  # w = (wbar - θ * w) / ρ
+      kaxpy!(m, ζ, w, y)                    # y = y + ζ * w
 
       if λ > 0
         # DₖRₖ = V̅ₖ with v̅ₖ = cpₖvₖ + spₖqₖ₋₁
         if iter == 1
-          @kaxpy!(n, one(FC)/ρ, cpₖ * v, d)
+          kaxpy!(n, cpₖ/ρ, v, d)
         else
-          @kaxpby!(n, one(FC)/ρ, cpₖ * v, -θ/ρ, d)
-          @kaxpy!(n, one(FC)/ρ, spₖ * q, d)
-          @kaxpby!(n, spₖ, v, -cpₖ, q)  # q̄ₖ ← spₖ * vₖ - cpₖ * qₖ₋₁
+          kaxpby!(n, cpₖ/ρ, v, -θ/ρ, d)
+          kaxpy!(n, spₖ/ρ, q, d)
+          kaxpby!(n, spₖ, v, -cpₖ, q)  # q̄ₖ ← spₖ * vₖ - cpₖ * qₖ₋₁
         end
       else
         # DₖRₖ = Vₖ
         if iter == 1
-          @kaxpy!(n, one(FC)/ρ, v, d)
+          kdivcopy!(n, d, v, ρ)
         else
-          @kaxpby!(n, one(FC)/ρ, v, -θ/ρ, d)
+          kaxpby!(n, one(FC)/ρ, v, -θ/ρ, d)
         end
       end
 
       # xₖ = Dₖzₖ
-      @kaxpy!(n, ζ, d, x)
+      kaxpy!(n, ζ, d, x)
 
       # 2. αₖ₊₁Nvₖ₊₁ = Aᴴuₖ₊₁ - βₖ₊₁Nvₖ
-      mul!(Aᴴu, Aᴴ, u)
-      @kaxpby!(n, one(FC), Aᴴu, -β, Nv)
+      kmul!(Aᴴu, Aᴴ, u)
+      kaxpby!(n, one(FC), Aᴴu, -β, Nv)
       NisI || mulorldiv!(v, N, Nv, ldiv)
-      α = sqrt(@kdotr(n, v, Nv))
+      α = knorm_elliptic(n, v, Nv)
       Anorm² = Anorm² + α * α  # = ‖Lₖ‖
       ArNorm = α * β * abs(ζ/ρ)
       history && push!(ArNorms, ArNorm)
 
-      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %7.1e  %8.1e  %8.1e  %7.1e  %.2fs\n", iter, rNorm, ArNorm, β, α, c, s, Anorm², ktimer(start_time))
+      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %7.1e  %8.1e  %8.1e  %7.1e  %.2fs\n", iter, rNorm, ArNorm, β, α, c, s, Anorm², start_time |> ktimer)
 
       if λ > 0
         (cdₖ, sdₖ, λₖ₊₁) = sym_givens(λ, λₐᵤₓ)
-        @kscal!(n, sdₖ, q)  # qₖ ← sdₖ * q̄ₖ
+        kscal!(n, sdₖ, q)  # qₖ ← sdₖ * q̄ₖ
         (cpₖ, spₖ, αhat) = sym_givens(α, λₖ₊₁)
       else
         αhat = α
       end
 
       if α ≠ 0
-        @kscal!(n, one(FC)/α, v)
-        NisI || @kscal!(n, one(FC)/α, Nv)
-        @kaxpby!(m, one(T)/αhat, u, -βhat / αhat, wbar)  # wbar = (u - beta * wbar) / alpha
+        kdiv!(n, v, α)
+        NisI || kdiv!(n, Nv, α)
+        kaxpby!(m, one(FC)/αhat, u, -βhat / αhat, wbar)  # wbar = (u - beta * wbar) / alpha
       end
       θ    =  s * αhat
       ρbar = -c * αhat
 
-      user_requested_exit = callback(solver) :: Bool
+      user_requested_exit = callback(workspace) :: Bool
       solved = rNorm ≤ ɛ_c
       inconsistent = (rNorm > 100 * ɛ_c) & (ArNorm ≤ ɛ_i)
       tired = iter ≥ itmax
@@ -392,8 +390,8 @@ kwargs_craigmr = (:M, :N, :ldiv, :sqd, :λ, :atol, :rtol, :itmax, :timemax, :ver
     stats.niter = iter
     stats.solved = solved
     stats.inconsistent = inconsistent
-    stats.timer = ktimer(start_time)
+    stats.timer = start_time |> ktimer
     stats.status = status
-    return solver
+    return workspace
   end
 end

@@ -3,8 +3,8 @@
 # This method is described in
 #
 # A. Montoison, D. Orban and M. A. Saunders
-# MinAres: An Iterative Method for Symmetric Linear Systems
-# Cahier du GERAD G-2023-40.
+# MinAres: An Iterative Solver for Symmetric Linear Systems
+# SIAM Journal on Matrix Analysis and Applications, 46(1), pp. 509--529, 2025.
 #
 # Alexis Montoison, <alexis.montoison@polymtl.ca>
 # Palo Alto, March 2022.
@@ -18,7 +18,7 @@ export minares, minares!
                          rtol::T=√eps(T), Artol::T = √eps(T),
                          itmax::Int=0, timemax::Float64=Inf,
                          verbose::Int=0, history::Bool=false,
-                         callback=solver->false, iostream::IO=kstdout)
+                         callback=workspace->false, iostream::IO=kstdout)
 
 `T` is an `AbstractFloat` such as `Float32`, `Float64` or `BigFloat`.
 `FC` is `T` or `Complex{T}`.
@@ -29,16 +29,22 @@ MINARES can be warm-started from an initial guess `x0` where `kwargs` are the sa
 
 MINARES solves the Hermitian linear system Ax = b of size n.
 MINARES minimizes ‖Arₖ‖₂ when M = Iₙ and ‖AMrₖ‖_M otherwise.
-The estimates computed every iteration are ‖Mrₖ‖₂ and ‖AMrₖ‖_M.
+The estimates computed every iteration are ‖rₖ‖_M and ‖AMrₖ‖_M.
+
+#### Interface
+
+To easily switch between Krylov methods, use the generic interface [`krylov_solve`](@ref) with `method = :minares`.
+
+For an in-place variant that reuses memory across solves, see [`minares!`](@ref).
 
 #### Input arguments
 
-* `A`: a linear operator that models a Hermitian positive definite matrix of dimension n;
-* `b`: a vector of length n.
+* `A`: a linear operator that models a Hermitian (possibly singular) matrix of dimension `n`;
+* `b`: a vector of length `n`.
 
 #### Optional argument
 
-* `x0`: a vector of length n that represents an initial guess of the solution x.
+* `x0`: a vector of length `n` that represents an initial guess of the solution `x`.
 
 #### Keyword arguments
 
@@ -52,26 +58,30 @@ The estimates computed every iteration are ‖Mrₖ‖₂ and ‖AMrₖ‖_M.
 * `timemax`: the time limit in seconds;
 * `verbose`: additional details can be displayed if verbose mode is enabled (verbose > 0). Information will be displayed every `verbose` iterations;
 * `history`: collect additional statistics on the run such as residual norms, or Aᴴ-residual norms;
-* `callback`: function or functor called as `callback(solver)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
+* `callback`: function or functor called as `callback(workspace)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
 * `iostream`: stream to which output is logged.
 
 #### Output arguments
 
-* `x`: a dense vector of length n;
+* `x`: a dense vector of length `n`;
 * `stats`: statistics collected on the run in a [`SimpleStats`](@ref) structure.
 
 #### Reference
-* A. Montoison, D. Orban and M. A. Saunders, [*MinAres: An Iterative Solver for Symmetric Linear Systems*](https://doi.org/10.13140/RG.2.2.18163.91683), Cahier du GERAD G-2023-40, GERAD, Montréal, 2023.
+
+* A. Montoison, D. Orban and M. A. Saunders, [*MinAres: An Iterative Solver for Symmetric Linear Systems*](https://doi.org/10.1137/23M1605454), SIAM Journal on Matrix Analysis and Applications, 46(1), pp. 509--529, 2025.
 """
 function minares end
 
 """
-    solver = minares!(solver::MinaresSolver, A, b; kwargs...)
-    solver = minares!(solver::MinaresSolver, A, b, x0; kwargs...)
+    workspace = minares!(workspace::MinaresWorkspace, A, b; kwargs...)
+    workspace = minares!(workspace::MinaresWorkspace, A, b, x0; kwargs...)
 
-where `kwargs` are keyword arguments of [`minares`](@ref).
+In these calls, `kwargs` are keyword arguments of [`minares`](@ref).
 
-See [`MinaresSolver`](@ref) for more details about the `solver`.
+See [`MinaresWorkspace`](@ref) for instructions on how to create the `workspace`.
+
+For a more generic interface, you can use [`krylov_workspace`](@ref) with `method = :minares` to allocate the workspace,
+and [`krylov_solve!`](@ref) to run the Krylov method in-place.
 """
 function minares! end
 
@@ -80,105 +90,91 @@ def_args_minares = (:(A                    ),
 
 def_optargs_minares = (:(x0::AbstractVector),)
 
-def_kwargs_minares = (:(; M = I                     ),
-                      :(; ldiv::Bool = false        ),
-                      :(; λ::T = zero(T)            ),
-                      :(; atol::T = √eps(T)         ),
-                      :(; rtol::T = √eps(T)         ),
-                      :(; Artol::T = √eps(T)        ),
-                      :(; itmax::Int = 0            ),
-                      :(; timemax::Float64 = Inf    ),
-                      :(; verbose::Int = 0          ),
-                      :(; history::Bool = false     ),
-                      :(; callback = solver -> false),
-                      :(; iostream::IO = kstdout    ))
+def_kwargs_minares = (:(; M = I                        ),
+                      :(; ldiv::Bool = false           ),
+                      :(; λ::T = zero(T)               ),
+                      :(; atol::T = √eps(T)            ),
+                      :(; rtol::T = √eps(T)            ),
+                      :(; Artol::T = √eps(T)           ),
+                      :(; itmax::Int = 0               ),
+                      :(; timemax::Float64 = Inf       ),
+                      :(; verbose::Int = 0             ),
+                      :(; history::Bool = false        ),
+                      :(; callback = workspace -> false),
+                      :(; iostream::IO = kstdout       ))
 
-def_kwargs_minares = mapreduce(extract_parameters, vcat, def_kwargs_minares)
+def_kwargs_minares = extract_parameters.(def_kwargs_minares)
 
 args_minares = (:A, :b)
 optargs_minares = (:x0,)
 kwargs_minares = (:M, :ldiv, :λ, :atol, :rtol, :Artol, :itmax, :timemax, :verbose, :history, :callback, :iostream)
 
 @eval begin
-  function minares($(def_args_minares...), $(def_optargs_minares...); $(def_kwargs_minares...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = MinaresSolver(A, b)
-    warm_start!(solver, $(optargs_minares...))
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    minares!(solver, $(args_minares...); $(kwargs_minares...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.stats)
-  end
-
-  function minares($(def_args_minares...); $(def_kwargs_minares...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = MinaresSolver(A, b)
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    minares!(solver, $(args_minares...); $(kwargs_minares...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.stats)
-  end
-
-  function minares!(solver :: MinaresSolver{T,FC,S}, $(def_args_minares...); $(def_kwargs_minares...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
+  function minares!(workspace :: MinaresWorkspace{T,FC,S}, $(def_args_minares...); $(def_kwargs_minares...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
 
     # Timer
     start_time = time_ns()
     timemax_ns = 1e9 * timemax
 
     n, m = size(A)
-    (m == solver.m && n == solver.n) || error("(solver.m, solver.n) = ($(solver.m), $(solver.n)) is inconsistent with size(A) = ($m, $n)")
+    (m == workspace.m && n == workspace.n) || error("(workspace.m, workspace.n) = ($(workspace.m), $(workspace.n)) is inconsistent with size(A) = ($m, $n)")
     m == n || error("System must be square")
     length(b) == m || error("Inconsistent problem size")
     (verbose > 0) && @printf(iostream, "MINARES: system of size %d\n", n)
 
     # Tests M = Iₙ
     MisI = (M === I)
-    !MisI && error("Preconditioners are not yet supported")
 
     # Check type consistency
     eltype(A) == FC || error("eltype(A) ≠ $FC")
-    ktypeof(b) <: S || error("ktypeof(b) is not a subtype of $S")
+    ktypeof(b) == S || error("ktypeof(b) must be equal to $S")
 
     # Set up workspace.
-    Δx, vₖ, vₖ₊₁, x, q, stats = solver.Δx, solver.vₖ, solver.vₖ₊₁, solver.x, solver.q, solver.stats
-    wₖ₋₂, wₖ₋₁ = solver.wₖ₋₂, solver.wₖ₋₁
-    dₖ₋₂, dₖ₋₁ = solver.dₖ₋₂, solver.dₖ₋₁
-    warm_start = solver.warm_start
+    allocate_if(!MisI, workspace, :M⁻¹vₖ, S, workspace.x)  # The length of M⁻¹vₖ is n
+    Δx, vₖ, vₖ₊₁, x, q, stats = workspace.Δx, workspace.vₖ, workspace.vₖ₊₁, workspace.x, workspace.q, workspace.stats
+    # With a preconditioner, q is not needed as a temporary vector and stores M⁻¹vₖ₊₁.
+    M⁻¹vₖ   = MisI ? vₖ : workspace.M⁻¹vₖ
+    M⁻¹vₖ₊₁ = MisI ? vₖ₊₁ : q
+    wₖ₋₂, wₖ₋₁ = workspace.wₖ₋₂, workspace.wₖ₋₁
+    dₖ₋₂, dₖ₋₁ = workspace.dₖ₋₂, workspace.dₖ₋₁
+    warm_start = workspace.warm_start
     rNorms, ArNorms = stats.residuals, stats.Aresiduals
     reset!(stats)
 
     iter = 0
     itmax == 0 && (itmax = 2*n)
 
-    x .= zero(FC)  # x₀
+    kfill!(x, zero(FC))  # x₀
 
-    # Initialize the Lanczos process.
-    # β₁v₁ = r₀
+    # Initialize the preconditioned Lanczos process.
+    # β₁M⁻¹v₁ = r₀
     if warm_start
-      mul!(vₖ, A, Δx)  # r₀ = b - Ax₀
-      (λ ≠ 0) && @kaxpy!(n, λ, Δx, vₖ)
-      @kaxpby!(n, one(FC), b, -one(FC), vₖ)
+      kmul!(M⁻¹vₖ, A, Δx)  # r₀ = b - (A + λI)x₀
+      (λ ≠ 0) && kaxpy!(n, λ, Δx, M⁻¹vₖ)
+      kaxpby!(n, one(FC), b, -one(FC), M⁻¹vₖ)
     else
-      vₖ .= b  # r₀ = b
+      kcopy!(n, M⁻¹vₖ, b)  # r₀ = b
     end
-    βₖ = @knrm2(n, vₖ)  # β₁ = ‖v₁‖
+    MisI || mulorldiv!(vₖ, M, M⁻¹vₖ, ldiv)
+    βₖ = knorm_elliptic(n, vₖ, M⁻¹vₖ)  # β₁ = ‖r₀‖_M
     if βₖ ≠ 0
-      @kscal!(n, one(FC) / βₖ, vₖ)
+      kdiv!(n, vₖ, βₖ)
+      MisI || kdiv!(n, M⁻¹vₖ, βₖ)
     end
     β₁ = βₖ
 
-    # β₂v₂ = (A + λI)v₁ - α₁v₁
-    mul!(vₖ₊₁, A, vₖ)
+    # β₂M⁻¹v₂ = (A + λI)v₁ - α₁M⁻¹v₁
+    kmul!(M⁻¹vₖ₊₁, A, vₖ)
     if λ ≠ 0
-      @kaxpy!(n, λ, vₖ, vₖ₊₁)
+      kaxpy!(n, λ, vₖ, M⁻¹vₖ₊₁)
     end
-    αₖ = @kdotr(n, vₖ, vₖ₊₁)   # α₁ = (vₖ)ᵀ(A + λI)vₖ
-    @kaxpy!(n, -αₖ, vₖ, vₖ₊₁)
-    βₖ₊₁ = @knrm2(n, vₖ₊₁)    # β₂ = ‖v₂‖
+    αₖ = kdotr(n, vₖ, M⁻¹vₖ₊₁)  # α₁ = (v₁)ᴴ(A + λI)v₁
+    kaxpy!(n, -αₖ, M⁻¹vₖ, M⁻¹vₖ₊₁)
+    MisI || mulorldiv!(vₖ₊₁, M, M⁻¹vₖ₊₁, ldiv)
+    βₖ₊₁ = knorm_elliptic(n, vₖ₊₁, M⁻¹vₖ₊₁)  # β₂ = ‖M⁻¹v₂‖_M
     if βₖ₊₁ ≠ 0
-      @kscal!(n, one(FC) / βₖ₊₁, vₖ₊₁)
+      kdiv!(n, vₖ₊₁, βₖ₊₁)
+      MisI || kdiv!(n, M⁻¹vₖ₊₁, βₖ₊₁)
     end
 
     ξₖ₋₁ = zero(T)
@@ -194,12 +190,12 @@ kwargs_minares = (:M, :ldiv, :λ, :atol, :rtol, :Artol, :itmax, :timemax, :verbo
     c̃₂ₖ₋₂ = s̃₂ₖ₋₂ = zero(T)
     c̃₂ₖ₋₁ = s̃₂ₖ₋₁ = zero(T)
     c̃₂ₖ   = s̃₂ₖ   = zero(T)
-    wₖ₋₂ .= zero(T)             # Column k-2 of Wₖ = Vₖ(Rₖ)⁻¹
-    wₖ₋₁ .= zero(T)             # Column k-1 of Wₖ = Vₖ(Rₖ)⁻¹
-    dₖ₋₂ .= zero(T)             # Column k-2 of Dₖ = Wₖ(Uₖ)⁻¹
-    dₖ₋₁ .= zero(T)             # Column k-1 of Dₖ = Wₖ(Uₖ)⁻¹
-    β₁α₁ = βₖ * αₖ              # Variable used to update zₖ
-    β₁β₂ = βₖ * βₖ₊₁            # Variable used to update zₖ
+    kfill!(wₖ₋₂, zero(FC))  # Column k-2 of Wₖ = Vₖ(Rₖ)⁻¹
+    kfill!(wₖ₋₁, zero(FC))  # Column k-1 of Wₖ = Vₖ(Rₖ)⁻¹
+    kfill!(dₖ₋₂, zero(FC))  # Column k-2 of Dₖ = Wₖ(Uₖ)⁻¹
+    kfill!(dₖ₋₁, zero(FC))  # Column k-1 of Dₖ = Wₖ(Uₖ)⁻¹
+    β₁α₁ = βₖ * αₖ          # Variable used to update zₖ
+    β₁β₂ = βₖ * βₖ₊₁        # Variable used to update zₖ
     ϵₖ₋₂ = ϵₖ₋₁ = zero(T)
     ℓ = itmax + 2
 
@@ -214,17 +210,18 @@ kwargs_minares = (:M, :ldiv, :λ, :atol, :rtol, :Artol, :itmax, :timemax, :verbo
     if rNorm == 0
       stats.niter = 0
       stats.solved, stats.inconsistent = true, false
-      stats.timer = ktimer(start_time)
-      stats.status = "x = 0 is a zero-residual solution"
-      solver.warm_start = false
-      return solver
+      stats.timer = start_time |> ktimer
+      stats.status = "x is a zero-residual solution"
+      warm_start && kaxpy!(n, one(FC), Δx, x)
+      workspace.warm_start = false
+      return workspace
     end
 
     (verbose > 0) && @printf(iostream, "%5s  %7s  %7s  %7s  %8s  %5s\n", "k", "‖rₖ‖", "‖Arₖ‖", "βₖ₊₁", "ζₖ", "timer")
-    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %8s  %.2fs\n", iter, rNorm, ArNorm, β₁, " ✗ ✗ ✗ ✗", ktimer(start_time))
+    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %8s  %.2fs\n", iter, rNorm, ArNorm, β₁, " ✗ ✗ ✗ ✗", start_time |> ktimer)
 
     # Tolerance for breakdown detection.
-    btol = eps(T)^(3/4)
+    btol = eps(T)^(3//4)
 
     # Stopping criterion.
     solved = (rNorm ≤ ε) || (ArNorm ≤ κ)
@@ -262,43 +259,56 @@ kwargs_minares = (:M, :ldiv, :λ, :atol, :rtol, :Artol, :itmax, :timemax, :verbo
       # w₁ = v₁ / λ₁
       if iter == 1
         wₖ = wₖ₋₁
-        @kaxpy!(n, one(T), vₖ, wₖ)
-        @kscal!(n, one(T) / λₖ, wₖ)
+        kdivcopy!(n, wₖ, vₖ, λₖ)
       end
       # w₂ = (v₂ - γ₁w₁) / λ₂
       if iter == 2
         wₖ = wₖ₋₂
-        @kaxpy!(n, -γₖ₋₁, wₖ₋₁, wₖ)
-        @kaxpy!(n, one(T), vₖ, wₖ)
-        @kscal!(n, one(T) / λₖ, wₖ)
+        kaxpy!(n, -γₖ₋₁, wₖ₋₁, wₖ)
+        kaxpy!(n, one(T), vₖ, wₖ)
+        kdiv!(n, wₖ, λₖ)
       end
       # wₖ = (vₖ - γₖ₋₁wₖ₋₁ - ϵₖ₋₂wₖ₋₂) / λₖ
       if iter ≥ 3
-        @kscal!(n, -ϵₖ₋₂, wₖ₋₂)
+        kscal!(n, -ϵₖ₋₂, wₖ₋₂)
         wₖ = wₖ₋₂
-        @kaxpy!(n, -γₖ₋₁, wₖ₋₁, wₖ)
-        @kaxpy!(n, one(T), vₖ, wₖ)
-        @kscal!(n, one(T) / λₖ, wₖ)
+        kaxpy!(n, -γₖ₋₁, wₖ₋₁, wₖ)
+        kaxpy!(n, one(T), vₖ, wₖ)
+        kdiv!(n, wₖ, λₖ)
       end
 
-      # Continue the Lanczos process.
-      # M(A + λI)Vₖ₊₁ = Vₖ₊₂Tₖ₊₂.ₖ₊₁
-      # βₖ₊₂vₖ₊₂ = M(A + λI)vₖ₊₁ - αₖ₊₁vₖ₊₁ - βₖ₊₁vₖ
+      # Continue the preconditioned Lanczos process.
+      # (A + λI)Vₖ₊₁ = M⁻¹Vₖ₊₂Tₖ₊₂.ₖ₊₁
+      # βₖ₊₂M⁻¹vₖ₊₂ = (A + λI)vₖ₊₁ - αₖ₊₁M⁻¹vₖ₊₁ - βₖ₊₁M⁻¹vₖ
       if iter ≤ ℓ-1
-        mul!(q, A, vₖ₊₁)  # q ← Avₖ
-        @kaxpby!(n, one(T), q, -βₖ₊₁, vₖ)  # Forms vₖ₊₂ : vₖ ← Avₖ₊₁ - βₖ₊₁vₖ
+        # M⁻¹vₖ₊₂ is formed in a vector that is not used anymore.
+        # Without preconditioner, vₖ = M⁻¹vₖ is still needed and we use q.
+        # With a preconditioner, vₖ was only needed to compute wₖ.
+        t = MisI ? q : vₖ
+        kmul!(t, A, vₖ₊₁)             # t ← Avₖ₊₁
+        kaxpy!(n, -βₖ₊₁, M⁻¹vₖ, t)    # t ← t - βₖ₊₁M⁻¹vₖ
         if λ ≠ 0
-          @kaxpy!(n, λ, vₖ₊₁, vₖ)          # vₖ ← vₖ + λvₖ₊₁
+          kaxpy!(n, λ, vₖ₊₁, t)       # t ← t + λvₖ₊₁
         end
-        αₖ₊₁ = @kdotr(n, vₖ, vₖ₊₁)         # αₖ₊₁ = ⟨(A + λI)vₖ₊₁ - βₖ₊₁vₖ , vₖ₊₁⟩
-        @kaxpy!(n, -αₖ₊₁, vₖ₊₁, vₖ)        # vₖ ← vₖ - αₖ₊₁vₖ₊₁
-        βₖ₊₂ = @knrm2(n, vₖ)               # βₖ₊₂ = ‖vₖ₊₂‖
-      
+        αₖ₊₁ = kdotr(n, t, vₖ₊₁)      # αₖ₊₁ = ⟨(A + λI)vₖ₊₁ - βₖ₊₁M⁻¹vₖ , vₖ₊₁⟩
+        kaxpy!(n, -αₖ₊₁, M⁻¹vₖ₊₁, t)  # t ← t - αₖ₊₁M⁻¹vₖ₊₁
+        if MisI
+          # vₖ₊₂ = M⁻¹vₖ₊₂ = t
+          @kswap!(q, vₖ)
+          M⁻¹vₖ = vₖ
+        else
+          # M⁻¹vₖ is not needed anymore and stores vₖ₊₂ = M * M⁻¹vₖ₊₂
+          mulorldiv!(M⁻¹vₖ, M, t, ldiv)
+          @kswap!(vₖ, M⁻¹vₖ)
+        end
+        βₖ₊₂ = knorm_elliptic(n, vₖ, M⁻¹vₖ)  # βₖ₊₂ = ‖M⁻¹vₖ₊₂‖_M
+
         # Detection of early termination
         if βₖ₊₂ ≤ btol
           ℓ = iter + 1
         else
-          @kscal!(n, one(FC) / βₖ₊₂, vₖ)
+          kdiv!(n, vₖ, βₖ₊₂)
+          MisI || kdiv!(n, M⁻¹vₖ, βₖ₊₂)
         end
       end
 
@@ -325,7 +335,7 @@ kwargs_minares = (:M, :ldiv, :λ, :atol, :rtol, :Artol, :itmax, :timemax, :verbo
       # [ •               •   ϵₖ₋₁ γₖ ]      [ 0   •   •   •   •    •   0    ]
       # [ 0  •    •   •   •    0   ϵₖ ]      [ 0   •   •   •   •    •   0    ]
 
-      # If k = 1, we don't have any previous reflexion.
+      # If k = 1, we don't have any previous reflection.
       # If k = 2, we apply the reflections Q̃ₖ₊₁.ₖ₋₁ and Q̃ₖ.ₖ₋₁.
       # If k ≥ 3, we apply the reflections Q̃ₖ.ₖ₋₁, Q̃ₖ₊₁.ₖ₋₁ and Q̃ₖ.ₖ₋₂.
 
@@ -409,29 +419,28 @@ kwargs_minares = (:M, :ldiv, :λ, :atol, :rtol, :Artol, :itmax, :timemax, :verbo
       # d₁ = w₁ / μ₁
       if iter == 1
         dₖ = dₖ₋₁
-        @kaxpy!(n, one(T), wₖ, dₖ)
-        @kscal!(n, one(T) / μₖ, dₖ)
+        kdivcopy!(n, dₖ, wₖ, μₖ)
       end
       # d₂ = (w₂ - ϕ₁d₁) / μ₂
       if iter == 2
         dₖ = dₖ₋₂
-        @kaxpy!(n, -ϕₖ₋₁, dₖ₋₁, dₖ)
-        @kaxpy!(n, one(T), wₖ, dₖ)
-        @kscal!(n, one(T) / μₖ, dₖ)
+        kaxpy!(n, -ϕₖ₋₁, dₖ₋₁, dₖ)
+        kaxpy!(n, one(T), wₖ, dₖ)
+        kdiv!(n, dₖ, μₖ)
       end
       # dₖ = (wₖ - ϕₖ₋₁dₖ₋₁ - ρₖ₋₂dₖ₋₂) / μₖ
       if iter ≥ 3
-        @kscal!(n, -ρₖ₋₂, dₖ₋₂)
+        kscal!(n, -ρₖ₋₂, dₖ₋₂)
         dₖ = dₖ₋₂
-        @kaxpy!(n, -ϕₖ₋₁, dₖ₋₁, dₖ)
-        @kaxpy!(n, one(T), wₖ, dₖ)
-        @kscal!(n, one(T) / μₖ, dₖ)
+        kaxpy!(n, -ϕₖ₋₁, dₖ₋₁, dₖ)
+        kaxpy!(n, one(T), wₖ, dₖ)
+        kdiv!(n, dₖ, μₖ)
       end
 
       # x = Vₖyₖ = Dₖzₖ = x₋₁ + ζₖdₖ
-      @kaxpy!(n, ζₖ, dₖ, x)
+      kaxpy!(n, ζₖ, dₖ, x)
 
-      # Update ‖Arₖ‖ estimate
+      # Update ‖AMrₖ‖_M estimate
       (iter ≤ ℓ-2)  && (ArNorm = sqrt(ζbisₖ₊₁^2 + ζbarₖ₊₂^2))
       (iter == ℓ-1) && (ArNorm = abs(ζbisₖ₊₁))
       (iter == ℓ)   && (ArNorm = zero(T))
@@ -531,8 +540,8 @@ kwargs_minares = (:M, :ldiv, :λ, :atol, :rtol, :Artol, :itmax, :timemax, :verbo
       end
       πₖ₊₁ = χbarₖ₊₁
 
-      # Update ‖rₖ‖ estimate
-      # ‖ rₖ ‖ = √((πₖ₋₁ - τₖ₋₁)² + (πₖ - τₖ)² + (πₖ₊₁)²)
+      # Update ‖rₖ‖_M estimate
+      # ‖rₖ‖_M = √((πₖ₋₁ - τₖ₋₁)² + (πₖ - τₖ)² + (πₖ₊₁)²)
       if iter == 1
         rNorm = sqrt((πₖ - τₖ)^2 + πₖ₊₁^2)
       else
@@ -546,13 +555,14 @@ kwargs_minares = (:M, :ldiv, :λ, :atol, :rtol, :Artol, :itmax, :timemax, :verbo
       tired = iter ≥ itmax
       timer = time_ns() - start_time
       overtimed = timer > timemax_ns
-      user_requested_exit = callback(solver) :: Bool
+      user_requested_exit = callback(workspace) :: Bool
 
       # Update variables
-      @kswap(vₖ, vₖ₊₁)
+      @kswap!(vₖ, vₖ₊₁)
+      @kswap!(M⁻¹vₖ, M⁻¹vₖ₊₁)
       if iter ≥ 2
-        @kswap(wₖ₋₂, wₖ₋₁)
-        @kswap(dₖ₋₂, dₖ₋₁)
+        @kswap!(wₖ₋₂, wₖ₋₁)
+        @kswap!(dₖ₋₂, dₖ₋₁)
         ϵₖ₋₂ = ϵₖ₋₁
         c̃₂ₖ₋₄ = c̃₂ₖ₋₂
         s̃₂ₖ₋₄ = s̃₂ₖ₋₂
@@ -582,7 +592,7 @@ kwargs_minares = (:M, :ldiv, :λ, :atol, :rtol, :Artol, :itmax, :timemax, :verbo
         ζbarₖ₊₁ = ζbarₖ₊₂
       end
 
-      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %8.1e  %.2fs\n", iter, rNorm, ArNorm, βₖ, ζₖ, ktimer(start_time))
+      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %8.1e  %.2fs\n", iter, rNorm, ArNorm, βₖ, ζₖ, start_time |> ktimer)
     end
     (verbose > 0) && @printf(iostream, "\n")
 
@@ -593,15 +603,15 @@ kwargs_minares = (:M, :ldiv, :λ, :atol, :rtol, :Artol, :itmax, :timemax, :verbo
     overtimed           && (status = "time limit exceeded")
 
     # Update x
-    warm_start && @kaxpy!(n, one(FC), Δx, x)
-    solver.warm_start = false
+    warm_start && kaxpy!(n, one(FC), Δx, x)
+    workspace.warm_start = false
 
     # Update stats
     stats.niter = iter
     stats.solved = solved
     # stats.inconsistent = inconsistent
-    stats.timer = ktimer(start_time)
+    stats.timer = start_time |> ktimer
     stats.status = status
-    return solver
+    return workspace
   end
 end

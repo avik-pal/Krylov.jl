@@ -69,7 +69,7 @@ end
       A, b = zero_rhs(FC=FC)
       (x, stats) = crmr(A, b)
       @test norm(x) == 0
-      @test stats.status == "x = 0 is a zero-residual solution"
+      @test stats.status == "x is a zero-residual solution"
 
       # Test preconditioner with an under-determined problem:
       # Find the least norm force that transfers mass unit distance with zero final velocity
@@ -90,16 +90,24 @@ end
         (x, stats) = crmr(A, b, N=D⁻¹, λ=1.0)
       end
 
+      # Test different types for input and output
+      A, b = over_consistent(FC=FC)
+      m, n = size(A)
+      workspace = CrmrWorkspace(KrylovConstructor(b, TestVector(similar(b, n))))
+      crmr!(workspace, A, b)
+      @test workspace.stats.solved
+      @test typeof(workspace.x) === TestVector{FC}
+
       # test callback function
       A, b = over_consistent(FC=FC)
-      solver = CrmrSolver(A, b)
+      workspace = CrmrWorkspace(A, b)
       tol = 1.0e-1
       cb_n2 = TestCallbackN2LN(A, b, real(zero(eltype(b))), tol = tol)
-      crmr!(solver, A, b, callback = cb_n2)
-      @test solver.stats.status == "user-requested exit"
-      @test cb_n2(solver)
+      crmr!(workspace, A, b, callback = cb_n2)
+      @test workspace.stats.status == "user-requested exit"
+      @test cb_n2(workspace)
 
-      @test_throws TypeError crmr(A, b, callback = solver -> "string", history = true)
+      @test_throws TypeError crmr(A, b, callback = workspace -> "string", history = true)
     end
   end
 end

@@ -24,7 +24,7 @@ export usymlq, usymlq!
                         transfer_to_usymcg::Bool=true, atol::T=√eps(T),
                         rtol::T=√eps(T), itmax::Int=0,
                         timemax::Float64=Inf, verbose::Int=0, history::Bool=false,
-                        callback=solver->false, iostream::IO=kstdout)
+                        callback=workspace->false, iostream::IO=kstdout)
 
 `T` is an `AbstractFloat` such as `Float32`, `Float64` or `BigFloat`.
 `FC` is `T` or `Complex{T}`.
@@ -38,20 +38,27 @@ USYMLQ determines the least-norm solution of the consistent linear system Ax = b
 USYMLQ is based on the orthogonal tridiagonalization process and requires two initial nonzero vectors `b` and `c`.
 The vector `c` is only used to initialize the process and a default value can be `b` or `Aᴴb` depending on the shape of `A`.
 The error norm ‖x - x*‖ monotonously decreases in USYMLQ.
-It's considered as a generalization of SYMMLQ.
+When `A` is Hermitian and `b = c`, USYMLQ is equivalent to SYMMLQ.
+USYMLQ is considered as a generalization of SYMMLQ.
 
 It can also be applied to under-determined and over-determined problems.
 In all cases, problems must be consistent.
 
+#### Interface
+
+To easily switch between Krylov methods, use the generic interface [`krylov_solve`](@ref) with `method = :usymlq`.
+
+For an in-place variant that reuses memory across solves, see [`usymlq!`](@ref).
+
 #### Input arguments
 
-* `A`: a linear operator that models a matrix of dimension m × n;
-* `b`: a vector of length m;
-* `c`: a vector of length n.
+* `A`: a linear operator that models a matrix of dimension `m × n`;
+* `b`: a vector of length `m`;
+* `c`: a vector of length `n`.
 
 #### Optional argument
 
-* `x0`: a vector of length n that represents an initial guess of the solution x.
+* `x0`: a vector of length `n` that represents an initial guess of the solution `x`.
 
 #### Keyword arguments
 
@@ -62,12 +69,12 @@ In all cases, problems must be consistent.
 * `timemax`: the time limit in seconds;
 * `verbose`: additional details can be displayed if verbose mode is enabled (verbose > 0). Information will be displayed every `verbose` iterations;
 * `history`: collect additional statistics on the run such as residual norms, or Aᴴ-residual norms;
-* `callback`: function or functor called as `callback(solver)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
+* `callback`: function or functor called as `callback(workspace)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
 * `iostream`: stream to which output is logged.
 
 #### Output arguments
 
-* `x`: a dense vector of length n;
+* `x`: a dense vector of length `n`;
 * `stats`: statistics collected on the run in a [`SimpleStats`](@ref) structure.
 
 #### References
@@ -79,12 +86,15 @@ In all cases, problems must be consistent.
 function usymlq end
 
 """
-    solver = usymlq!(solver::UsymlqSolver, A, b, c; kwargs...)
-    solver = usymlq!(solver::UsymlqSolver, A, b, c, x0; kwargs...)
+    workspace = usymlq!(workspace::UsymlqWorkspace, A, b, c; kwargs...)
+    workspace = usymlq!(workspace::UsymlqWorkspace, A, b, c, x0; kwargs...)
 
-where `kwargs` are keyword arguments of [`usymlq`](@ref).
+In these calls, `kwargs` are keyword arguments of [`usymlq`](@ref).
 
-See [`UsymlqSolver`](@ref) for more details about the `solver`.
+See [`UsymlqWorkspace`](@ref) for instructions on how to create the `workspace`.
+
+For a more generic interface, you can use [`krylov_workspace`](@ref) with `method = :usymlq` to allocate the workspace,
+and [`krylov_solve!`](@ref) to run the Krylov method in-place.
 """
 function usymlq! end
 
@@ -101,82 +111,62 @@ def_kwargs_usymlq = (:(; transfer_to_usymcg::Bool = true),
                      :(; timemax::Float64 = Inf         ),
                      :(; verbose::Int = 0               ),
                      :(; history::Bool = false          ),
-                     :(; callback = solver -> false     ),
+                     :(; callback = workspace -> false  ),
                      :(; iostream::IO = kstdout         ))
 
-def_kwargs_usymlq = mapreduce(extract_parameters, vcat, def_kwargs_usymlq)
+def_kwargs_usymlq = extract_parameters.(def_kwargs_usymlq)
 
 args_usymlq = (:A, :b, :c)
 optargs_usymlq = (:x0,)
 kwargs_usymlq = (:transfer_to_usymcg, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback, :iostream)
 
 @eval begin
-  function usymlq($(def_args_usymlq...), $(def_optargs_usymlq...); $(def_kwargs_usymlq...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = UsymlqSolver(A, b)
-    warm_start!(solver, $(optargs_usymlq...))
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    usymlq!(solver, $(args_usymlq...); $(kwargs_usymlq...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.stats)
-  end
-
-  function usymlq($(def_args_usymlq...); $(def_kwargs_usymlq...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = UsymlqSolver(A, b)
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    usymlq!(solver, $(args_usymlq...); $(kwargs_usymlq...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.stats)
-  end
-
-  function usymlq!(solver :: UsymlqSolver{T,FC,S}, $(def_args_usymlq...); $(def_kwargs_usymlq...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
+  function usymlq!(workspace :: UsymlqWorkspace{T,FC,Sm,Sn}, $(def_args_usymlq...); $(def_kwargs_usymlq...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, Sm <: AbstractVector{FC}, Sn <: AbstractVector{FC}}
 
     # Timer
     start_time = time_ns()
     timemax_ns = 1e9 * timemax
 
     m, n = size(A)
-    (m == solver.m && n == solver.n) || error("(solver.m, solver.n) = ($(solver.m), $(solver.n)) is inconsistent with size(A) = ($m, $n)")
+    (m == workspace.m && n == workspace.n) || error("(workspace.m, workspace.n) = ($(workspace.m), $(workspace.n)) is inconsistent with size(A) = ($m, $n)")
     length(b) == m || error("Inconsistent problem size")
     length(c) == n || error("Inconsistent problem size")
     (verbose > 0) && @printf(iostream, "USYMLQ: system of %d equations in %d variables\n", m, n)
 
     # Check type consistency
     eltype(A) == FC || @warn "eltype(A) ≠ $FC. This could lead to errors or additional allocations in operator-vector products."
-    ktypeof(b) <: S || error("ktypeof(b) is not a subtype of $S")
-    ktypeof(c) <: S || error("ktypeof(c) is not a subtype of $S")
+    ktypeof(b) == Sm || error("ktypeof(b) must be equal to $Sm")
+    ktypeof(c) == Sn || error("ktypeof(c) must be equal to $Sn")
 
     # Compute the adjoint of A
     Aᴴ = A'
 
     # Set up workspace.
-    uₖ₋₁, uₖ, p, Δx, x = solver.uₖ₋₁, solver.uₖ, solver.p, solver.Δx, solver.x
-    vₖ₋₁, vₖ, q, d̅, stats = solver.vₖ₋₁, solver.vₖ, solver.q, solver.d̅, solver.stats
-    warm_start = solver.warm_start
+    uₖ₋₁, uₖ, p, Δx, x = workspace.uₖ₋₁, workspace.uₖ, workspace.p, workspace.Δx, workspace.x
+    vₖ₋₁, vₖ, q, d̅, stats = workspace.vₖ₋₁, workspace.vₖ, workspace.q, workspace.d̅, workspace.stats
+    warm_start = workspace.warm_start
     rNorms = stats.residuals
     reset!(stats)
     r₀ = warm_start ? q : b
 
     if warm_start
-      mul!(r₀, A, Δx)
-      @kaxpby!(n, one(FC), b, -one(FC), r₀)
+      kmul!(r₀, A, Δx)
+      kaxpby!(n, one(FC), b, -one(FC), r₀)
     end
 
     # Initial solution x₀ and residual norm ‖r₀‖.
-    x .= zero(FC)
-    bNorm = @knrm2(m, r₀)
+    kfill!(x, zero(FC))
+    bNorm = knorm(m, r₀)
     history && push!(rNorms, bNorm)
     if bNorm == 0
       stats.niter = 0
       stats.solved = true
       stats.inconsistent = false
-      stats.timer = ktimer(start_time)
-      stats.status = "x = 0 is a zero-residual solution"
-      solver.warm_start = false
-      return solver
+      stats.timer = start_time |> ktimer
+      stats.status = "x is a zero-residual solution"
+      warm_start && kaxpy!(n, one(FC), Δx, x)
+      workspace.warm_start = false
+      return workspace
     end
 
     iter = 0
@@ -184,20 +174,20 @@ kwargs_usymlq = (:transfer_to_usymcg, :atol, :rtol, :itmax, :timemax, :verbose, 
 
     ε = atol + rtol * bNorm
     (verbose > 0) && @printf(iostream, "%5s  %7s  %5s\n", "k", "‖rₖ‖", "timer")
-    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %.2fs\n", iter, bNorm, ktimer(start_time))
+    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %.2fs\n", iter, bNorm, start_time |> ktimer)
 
-    βₖ = @knrm2(m, r₀)          # β₁ = ‖v₁‖ = ‖r₀‖
-    γₖ = @knrm2(n, c)           # γ₁ = ‖u₁‖ = ‖c‖
-    vₖ₋₁ .= zero(FC)            # v₀ = 0
-    uₖ₋₁ .= zero(FC)            # u₀ = 0
-    vₖ .= r₀ ./ βₖ              # v₁ = (b - Ax₀) / β₁
-    uₖ .= c ./ γₖ               # u₁ = c / γ₁
-    cₖ₋₁ = cₖ = -one(T)         # Givens cosines used for the LQ factorization of Tₖ
-    sₖ₋₁ = sₖ = zero(FC)        # Givens sines used for the LQ factorization of Tₖ
-    d̅ .= zero(FC)               # Last column of D̅ₖ = Uₖ(Qₖ)ᴴ
-    ζₖ₋₁ = ζbarₖ = zero(FC)     # ζₖ₋₁ and ζbarₖ are the last components of z̅ₖ = (L̅ₖ)⁻¹β₁e₁
-    ζₖ₋₂ = ηₖ = zero(FC)        # ζₖ₋₂ and ηₖ are used to update ζₖ₋₁ and ζbarₖ
-    δbarₖ₋₁ = δbarₖ = zero(FC)  # Coefficients of Lₖ₋₁ and Lₖ modified over the course of two iterations
+    βₖ = knorm(m, r₀)            # β₁ = ‖v₁‖ = ‖r₀‖
+    γₖ = knorm(n, c)             # γ₁ = ‖u₁‖ = ‖c‖
+    kfill!(vₖ₋₁, zero(FC))       # v₀ = 0
+    kfill!(uₖ₋₁, zero(FC))       # u₀ = 0
+    kdivcopy!(m, vₖ, r₀, βₖ)     # v₁ = (b - Ax₀) / β₁
+    kdivcopy!(n, uₖ, c, γₖ)      # u₁ = c / γ₁
+    cₖ₋₁ = cₖ = -one(T)          # Givens cosines used for the LQ factorization of Tₖ
+    sₖ₋₁ = sₖ = zero(FC)         # Givens sines used for the LQ factorization of Tₖ
+    kfill!(d̅, zero(FC))          # Last column of D̅ₖ = Uₖ(Qₖ)ᴴ
+    ζₖ₋₁ = ζbarₖ = zero(FC)      # ζₖ₋₁ and ζbarₖ are the last components of z̅ₖ = (L̅ₖ)⁻¹β₁e₁
+    ηₖ₋₁ = ηₖ = ζₖ₋₂ = zero(FC)  # ηₖ₋₁, ηₖ and ζₖ₋₂ are used to update ζₖ₋₁ and ζbarₖ
+    δbarₖ₋₁ = δbarₖ = zero(FC)   # Coefficients of Lₖ₋₁ and Lₖ modified over the course of two iterations
 
     # Stopping criterion.
     solved_lq = bNorm ≤ ε
@@ -215,21 +205,24 @@ kwargs_usymlq = (:transfer_to_usymcg, :atol, :rtol, :itmax, :timemax, :verbose, 
       # AUₖ  = VₖTₖ    + βₖ₊₁vₖ₊₁(eₖ)ᵀ = Vₖ₊₁Tₖ₊₁.ₖ
       # AᴴVₖ = Uₖ(Tₖ)ᴴ + γₖ₊₁uₖ₊₁(eₖ)ᵀ = Uₖ₊₁(Tₖ.ₖ₊₁)ᴴ
 
-      mul!(q, A , uₖ)  # Forms vₖ₊₁ : q ← Auₖ
-      mul!(p, Aᴴ, vₖ)  # Forms uₖ₊₁ : p ← Aᴴvₖ
+      kmul!(q, A , uₖ)  # Forms vₖ₊₁ : q ← Auₖ
+      kmul!(p, Aᴴ, vₖ)  # Forms uₖ₊₁ : p ← Aᴴvₖ
 
-      @kaxpy!(m, -γₖ, vₖ₋₁, q)  # q ← q - γₖ * vₖ₋₁
-      @kaxpy!(n, -βₖ, uₖ₋₁, p)  # p ← p - βₖ * uₖ₋₁
+      if iter ≥ 2
+        kaxpy!(m, -γₖ, vₖ₋₁, q)  # q ← q - γₖ * vₖ₋₁
+        kaxpy!(n, -βₖ, uₖ₋₁, p)  # p ← p - βₖ * uₖ₋₁
+      end
 
-      αₖ = @kdot(m, vₖ, q)      # αₖ = ⟨vₖ,q⟩
+      αₖ = kdot(m, vₖ, q)      # αₖ = ⟨vₖ,q⟩
 
-      @kaxpy!(m, -     αₖ , vₖ, q)    # q ← q - αₖ * vₖ
-      @kaxpy!(n, -conj(αₖ), uₖ, p)    # p ← p - ᾱₖ * uₖ
+      kaxpy!(m, -     αₖ , vₖ, q)    # q ← q - αₖ * vₖ
+      kaxpy!(n, -conj(αₖ), uₖ, p)    # p ← p - ᾱₖ * uₖ
 
-      βₖ₊₁ = @knrm2(m, q)       # βₖ₊₁ = ‖q‖
-      γₖ₊₁ = @knrm2(n, p)       # γₖ₊₁ = ‖p‖
+      βₖ₊₁ = knorm(m, q)       # βₖ₊₁ = ‖q‖
+      γₖ₊₁ = knorm(n, p)       # γₖ₊₁ = ‖p‖
 
       # Update the LQ factorization of Tₖ = L̅ₖQₖ.
+      #
       # [ α₁ γ₂ 0  •  •  •  0 ]   [ δ₁   0    •   •   •    •    0   ]
       # [ β₂ α₂ γ₃ •        • ]   [ λ₁   δ₂   •                 •   ]
       # [ 0  •  •  •  •     • ]   [ ϵ₁   λ₂   δ₃  •             •   ]
@@ -268,7 +261,6 @@ kwargs_usymlq = (:transfer_to_usymcg, :atol, :rtol, :itmax, :timemax, :verbose, 
       # [δ₁    0  ] [  ζ₁ ] = [β₁]
       # [λ₁  δbar₂] [ζbar₂]   [0 ]
       if iter == 2
-        ηₖ₋₁ = ηₖ
         ζₖ₋₁ = ηₖ₋₁ / δₖ₋₁
         ηₖ   = -λₖ₋₁ * ζₖ₋₁
       end
@@ -277,7 +269,6 @@ kwargs_usymlq = (:transfer_to_usymcg, :atol, :rtol, :itmax, :timemax, :verbose, 
       #                     [ζbarₖ]
       if iter ≥ 3
         ζₖ₋₂ = ζₖ₋₁
-        ηₖ₋₁ = ηₖ
         ζₖ₋₁ = ηₖ₋₁ / δₖ₋₁
         ηₖ   = -ϵₖ₋₂ * ζₖ₋₂ - λₖ₋₁ * ζₖ₋₁
       end
@@ -285,31 +276,29 @@ kwargs_usymlq = (:transfer_to_usymcg, :atol, :rtol, :itmax, :timemax, :verbose, 
       # Relations for the directions dₖ₋₁ and d̅ₖ, the last two columns of D̅ₖ = Uₖ(Qₖ)ᴴ.
       # [d̅ₖ₋₁ uₖ] [cₖ  s̄ₖ] = [dₖ₋₁ d̅ₖ] ⟷ dₖ₋₁ = cₖ * d̅ₖ₋₁ + sₖ * uₖ
       #           [sₖ -cₖ]             ⟷ d̅ₖ   = s̄ₖ * d̅ₖ₋₁ - cₖ * uₖ
-      if iter ≥ 2
-        # Compute solution xₖ.
-        # (xᴸ)ₖ₋₁ ← (xᴸ)ₖ₋₂ + ζₖ₋₁ * dₖ₋₁
-        @kaxpy!(n, ζₖ₋₁ * cₖ,  d̅, x)
-        @kaxpy!(n, ζₖ₋₁ * sₖ, uₖ, x)
-      end
-
-      # Compute d̅ₖ.
       if iter == 1
         # d̅₁ = u₁
-        @. d̅ = uₖ
+        kcopy!(n, d̅, uₖ)  # d̅ ← uₖ
       else
+        # Compute solution xₖ.
+        # (xᴸ)ₖ ← (xᴸ)ₖ₋₁ + ζₖ₋₁ * dₖ₋₁
+        kaxpy!(n, ζₖ₋₁ * cₖ,  d̅, x)
+        kaxpy!(n, ζₖ₋₁ * sₖ, uₖ, x)
+
+        # Compute d̅ₖ.
         # d̅ₖ = s̄ₖ * d̅ₖ₋₁ - cₖ * uₖ
-        @kaxpby!(n, -cₖ, uₖ, conj(sₖ), d̅)
+        kaxpby!(n, -cₖ, uₖ, conj(sₖ), d̅)
       end
 
-      # Compute uₖ₊₁ and uₖ₊₁.
-      @. vₖ₋₁ = vₖ  # vₖ₋₁ ← vₖ
-      @. uₖ₋₁ = uₖ  # uₖ₋₁ ← uₖ
+      # Compute vₖ₊₁ and uₖ₊₁.
+      kcopy!(m, vₖ₋₁, vₖ)  # vₖ₋₁ ← vₖ
+      kcopy!(n, uₖ₋₁, uₖ)  # uₖ₋₁ ← uₖ
 
       if βₖ₊₁ ≠ zero(T)
-        @. vₖ = q / βₖ₊₁  # βₖ₊₁vₖ₊₁ = q
+        kdivcopy!(m, vₖ, q, βₖ₊₁)  # vₖ₊₁ = q / βₖ₊₁
       end
       if γₖ₊₁ ≠ zero(T)
-        @. uₖ = p / γₖ₊₁  # γₖ₊₁uₖ₊₁ = p
+        kdivcopy!(n, uₖ, p, γₖ₊₁)  # uₖ₊₁ = p / γₖ₊₁
       end
 
       # Compute USYMLQ residual norm
@@ -331,28 +320,29 @@ kwargs_usymlq = (:transfer_to_usymcg, :atol, :rtol, :itmax, :timemax, :verbose, 
         rNorm_cg = abs(ρₖ)
       end
 
-      # Update sₖ₋₁, cₖ₋₁, γₖ, βₖ and δbarₖ₋₁.
+      # Update sₖ₋₁, cₖ₋₁, ηₖ₋₁, γₖ, βₖ and δbarₖ₋₁.
       sₖ₋₁    = sₖ
       cₖ₋₁    = cₖ
+      ηₖ₋₁    = ηₖ
       γₖ      = γₖ₊₁
       βₖ      = βₖ₊₁
       δbarₖ₋₁ = δbarₖ
 
       # Update stopping criterion.
-      user_requested_exit = callback(solver) :: Bool
+      user_requested_exit = callback(workspace) :: Bool
       solved_lq = rNorm_lq ≤ ε
       solved_cg = transfer_to_usymcg && (abs(δbarₖ) > eps(T)) && (rNorm_cg ≤ ε)
       tired = iter ≥ itmax
       timer = time_ns() - start_time
       overtimed = timer > timemax_ns
-      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %.2fs\n", iter, rNorm_lq, ktimer(start_time))
+      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %.2fs\n", iter, rNorm_lq, start_time |> ktimer)
     end
     (verbose > 0) && @printf(iostream, "\n")
 
     # Compute USYMCG point
-    # (xᶜ)ₖ ← (xᴸ)ₖ₋₁ + ζbarₖ * d̅ₖ
+    # (xᶜ)ₖ ← (xᴸ)ₖ + ζbarₖ * d̅ₖ
     if solved_cg
-      @kaxpy!(n, ζbarₖ, d̅, x)
+      kaxpy!(n, ζbarₖ, d̅, x)
     end
 
     # Termination status
@@ -363,15 +353,15 @@ kwargs_usymlq = (:transfer_to_usymcg, :atol, :rtol, :itmax, :timemax, :verbose, 
     overtimed           && (status = "time limit exceeded")
 
     # Update x
-    warm_start && @kaxpy!(n, one(FC), Δx, x)
-    solver.warm_start = false
+    warm_start && kaxpy!(n, one(FC), Δx, x)
+    workspace.warm_start = false
 
     # Update stats
     stats.niter = iter
     stats.solved = solved_lq || solved_cg
     stats.inconsistent = false
-    stats.timer = ktimer(start_time)
+    stats.timer = start_time |> ktimer
     stats.status = status
-    return solver
+    return workspace
   end
 end

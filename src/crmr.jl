@@ -32,7 +32,7 @@ export crmr, crmr!
                       λ::T=zero(T), atol::T=√eps(T),
                       rtol::T=√eps(T), itmax::Int=0,
                       timemax::Float64=Inf, verbose::Int=0, history::Bool=false,
-                      callback=solver->false, iostream::IO=kstdout)
+                      callback=workspace->false, iostream::IO=kstdout)
 
 `T` is an `AbstractFloat` such as `Float32`, `Float64` or `BigFloat`.
 `FC` is `T` or `Complex{T}`.
@@ -59,14 +59,20 @@ CRMR produces monotonic residuals ‖r‖₂.
 It is formally equivalent to CRAIG-MR, though can be slightly less accurate,
 but simpler to implement. Only the x-part of the solution is returned.
 
+#### Interface
+
+To easily switch between Krylov methods, use the generic interface [`krylov_solve`](@ref) with `method = :crmr`.
+
+For an in-place variant that reuses memory across solves, see [`crmr!`](@ref).
+
 #### Input arguments
 
-* `A`: a linear operator that models a matrix of dimension m × n;
-* `b`: a vector of length m.
+* `A`: a linear operator that models a matrix of dimension `m × n`;
+* `b`: a vector of length `m`.
 
 #### Keyword arguments
 
-* `N`: linear operator that models a Hermitian positive-definite matrix of size `n` used for preconditioning;
+* `N`: linear operator that models a Hermitian positive-definite matrix of size `m` used for preconditioning;
 * `ldiv`: define whether the preconditioner uses `ldiv!` or `mul!`;
 * `λ`: regularization parameter;
 * `atol`: absolute stopping tolerance based on the residual norm;
@@ -75,12 +81,12 @@ but simpler to implement. Only the x-part of the solution is returned.
 * `timemax`: the time limit in seconds;
 * `verbose`: additional details can be displayed if verbose mode is enabled (verbose > 0). Information will be displayed every `verbose` iterations;
 * `history`: collect additional statistics on the run such as residual norms, or Aᴴ-residual norms;
-* `callback`: function or functor called as `callback(solver)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
+* `callback`: function or functor called as `callback(workspace)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
 * `iostream`: stream to which output is logged.
 
 #### Output arguments
 
-* `x`: a dense vector of length n;
+* `x`: a dense vector of length `n`;
 * `stats`: statistics collected on the run in a [`SimpleStats`](@ref) structure.
 
 #### References
@@ -91,53 +97,46 @@ but simpler to implement. Only the x-part of the solution is returned.
 function crmr end
 
 """
-    solver = crmr!(solver::CrmrSolver, A, b; kwargs...)
+    workspace = crmr!(workspace::CrmrWorkspace, A, b; kwargs...)
 
-where `kwargs` are keyword arguments of [`crmr`](@ref).
+In this call, `kwargs` are keyword arguments of [`crmr`](@ref).
 
-See [`CrmrSolver`](@ref) for more details about the `solver`.
+See [`CrmrWorkspace`](@ref) for instructions on how to create the `workspace`.
+
+For a more generic interface, you can use [`krylov_workspace`](@ref) with `method = :crmr` to allocate the workspace,
+and [`krylov_solve!`](@ref) to run the Krylov method in-place.
 """
 function crmr! end
 
 def_args_crmr = (:(A                    ),
                  :(b::AbstractVector{FC}))
 
-def_kwargs_crmr = (:(; N = I                     ),
-                   :(; ldiv::Bool = false        ),
-                   :(; λ::T = zero(T)            ),
-                   :(; atol::T = √eps(T)         ),
-                   :(; rtol::T = √eps(T)         ),
-                   :(; itmax::Int = 0            ),
-                   :(; timemax::Float64 = Inf    ),
-                   :(; verbose::Int = 0          ),
-                   :(; history::Bool = false     ),
-                   :(; callback = solver -> false),
-                   :(; iostream::IO = kstdout    ))
+def_kwargs_crmr = (:(; N = I                        ),
+                   :(; ldiv::Bool = false           ),
+                   :(; λ::T = zero(T)               ),
+                   :(; atol::T = √eps(T)            ),
+                   :(; rtol::T = √eps(T)            ),
+                   :(; itmax::Int = 0               ),
+                   :(; timemax::Float64 = Inf       ),
+                   :(; verbose::Int = 0             ),
+                   :(; history::Bool = false        ),
+                   :(; callback = workspace -> false),
+                   :(; iostream::IO = kstdout       ))
 
-def_kwargs_crmr = mapreduce(extract_parameters, vcat, def_kwargs_crmr)
+def_kwargs_crmr = extract_parameters.(def_kwargs_crmr)
 
 args_crmr = (:A, :b)
 kwargs_crmr = (:N, :ldiv, :λ, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback, :iostream)
 
 @eval begin
-  function crmr($(def_args_crmr...); $(def_kwargs_crmr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = CrmrSolver(A, b)
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    crmr!(solver, $(args_crmr...); $(kwargs_crmr...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.stats)
-  end
-
-  function crmr!(solver :: CrmrSolver{T,FC,S}, $(def_args_crmr...); $(def_kwargs_crmr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
+  function crmr!(workspace :: CrmrWorkspace{T,FC,Sm,Sn}, $(def_args_crmr...); $(def_kwargs_crmr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, Sm <: AbstractVector{FC}, Sn <: AbstractVector{FC}}
 
     # Timer
     start_time = time_ns()
     timemax_ns = 1e9 * timemax
 
     m, n = size(A)
-    (m == solver.m && n == solver.n) || error("(solver.m, solver.n) = ($(solver.m), $(solver.n)) is inconsistent with size(A) = ($m, $n)")
+    (m == workspace.m && n == workspace.n) || error("(workspace.m, workspace.n) = ($(workspace.m), $(workspace.n)) is inconsistent with size(A) = ($m, $n)")
     length(b) == m || error("Inconsistent problem size")
     (verbose > 0) && @printf(iostream, "CRMR: system of %d equations in %d variables\n", m, n)
 
@@ -146,47 +145,47 @@ kwargs_crmr = (:N, :ldiv, :λ, :atol, :rtol, :itmax, :timemax, :verbose, :histor
 
     # Check type consistency
     eltype(A) == FC || @warn "eltype(A) ≠ $FC. This could lead to errors or additional allocations in operator-vector products."
-    ktypeof(b) <: S || error("ktypeof(b) is not a subtype of $S")
+    ktypeof(b) == Sm || error("ktypeof(b) must be equal to $Sm")
 
     # Compute the adjoint of A
     Aᴴ = A'
 
     # Set up workspace.
-    allocate_if(!NisI, solver, :Nq, S, m)
-    allocate_if(λ > 0, solver, :s , S, m)
-    x, p, Aᴴr, r = solver.x, solver.p, solver.Aᴴr, solver.r
-    q, s, stats = solver.q, solver.s, solver.stats
+    allocate_if(!NisI, workspace, :Nq, Sm, workspace.r)  # The length of Nq is m
+    allocate_if(λ > 0, workspace, :s , Sm, workspace.r)  # The length of s is m
+    x, p, Aᴴr, r = workspace.x, workspace.p, workspace.Aᴴr, workspace.r
+    q, s, stats = workspace.q, workspace.s, workspace.stats
     rNorms, ArNorms = stats.residuals, stats.Aresiduals
     reset!(stats)
-    Nq = NisI ? q : solver.Nq
+    Nq = NisI ? q : workspace.Nq
 
-    x .= zero(FC)              # initial estimation x = 0
+    kfill!(x, zero(FC))        # initial estimation x = 0
     mulorldiv!(r, N, b, ldiv)  # initial residual r = N * (b - Ax) = N * b
-    bNorm = @knrm2(m, r)       # norm(b - A * x0) if x0 ≠ 0.
+    bNorm = knorm(m, r)        # norm(b - A * x0) if x0 ≠ 0.
     rNorm = bNorm              # + λ * ‖x0‖ if x0 ≠ 0 and λ > 0.
     history && push!(rNorms, rNorm)
     if bNorm == 0
       stats.niter = 0
       stats.solved, stats.inconsistent = true, false
-      stats.timer = ktimer(start_time)
-      stats.status = "x = 0 is a zero-residual solution"
+      stats.timer = start_time |> ktimer
+      stats.status = "x is a zero-residual solution"
       history && push!(ArNorms, zero(T))
-      return solver
+      return workspace
     end
-    λ > 0 && (s .= r)
-    mul!(Aᴴr, Aᴴ, r)  # - λ * x0 if x0 ≠ 0.
-    p .= Aᴴr
-    γ = @kdotr(n, Aᴴr, Aᴴr)  # Faster than γ = dot(Aᴴr, Aᴴr)
+    λ > 0 && kcopy!(m, s, r)  # s ← r
+    kmul!(Aᴴr, Aᴴ, r)         # - λ * x0 if x0 ≠ 0.
+    kcopy!(n, p, Aᴴr)         # p ← Aᴴr
+    γ = kdotr(n, Aᴴr, Aᴴr)    # Faster than γ = dot(Aᴴr, Aᴴr)
     λ > 0 && (γ += λ * rNorm * rNorm)
     iter = 0
     itmax == 0 && (itmax = m + n)
 
     ArNorm = sqrt(γ)
     history && push!(ArNorms, ArNorm)
-    ɛ_c = atol + rtol * rNorm  # Stopping tolerance for consistent systems.
+    ɛ_c = atol + rtol * rNorm   # Stopping tolerance for consistent systems.
     ɛ_i = atol + rtol * ArNorm  # Stopping tolerance for inconsistent systems.
     (verbose > 0) && @printf(iostream, "%5s  %8s  %8s  %5s\n", "k", "‖Aᴴr‖", "‖r‖", "timer")
-    kdisplay(iter, verbose) && @printf(iostream, "%5d  %8.2e  %8.2e  %.2fs\n", iter, ArNorm, rNorm, ktimer(start_time))
+    kdisplay(iter, verbose) && @printf(iostream, "%5d  %8.2e  %8.2e  %.2fs\n", iter, ArNorm, rNorm, start_time |> ktimer)
 
     status = "unknown"
     solved = rNorm ≤ ɛ_c
@@ -196,21 +195,21 @@ kwargs_crmr = (:N, :ldiv, :λ, :atol, :rtol, :itmax, :timemax, :verbose, :histor
     overtimed = false
 
     while ! (solved || inconsistent || tired || user_requested_exit || overtimed)
-      mul!(q, A, p)
-      λ > 0 && @kaxpy!(m, λ, s, q)  # q = q + λ * s
+      kmul!(q, A, p)
+      λ > 0 && kaxpy!(m, λ, s, q)  # q = q + λ * s
       NisI || mulorldiv!(Nq, N, q, ldiv)
-      α = γ / @kdotr(m, q, Nq)   # Compute qᴴ * N * q
-      @kaxpy!(n,  α, p, x)       # Faster than  x =  x + α *  p
-      @kaxpy!(m, -α, Nq, r)      # Faster than  r =  r - α * Nq
-      rNorm = @knrm2(m, r)       # norm(r)
-      mul!(Aᴴr, Aᴴ, r)
-      γ_next = @kdotr(n, Aᴴr, Aᴴr)  # Faster than γ_next = dot(Aᴴr, Aᴴr)
+      α = γ / kdotr(m, q, Nq)  # Compute qᴴ * N * q
+      kaxpy!(n,  α, p, x)      # Faster than  x =  x + α *  p
+      kaxpy!(m, -α, Nq, r)     # Faster than  r =  r - α * Nq
+      rNorm = knorm(m, r)      # norm(r)
+      kmul!(Aᴴr, Aᴴ, r)
+      γ_next = kdotr(n, Aᴴr, Aᴴr)  # Faster than γ_next = dot(Aᴴr, Aᴴr)
       λ > 0 && (γ_next += λ * rNorm * rNorm)
       β = γ_next / γ
 
-      @kaxpby!(n, one(FC), Aᴴr, β, p)  # Faster than  p = Aᴴr + β * p
+      kaxpby!(n, one(FC), Aᴴr, β, p)  # Faster than  p = Aᴴr + β * p
       if λ > 0
-        @kaxpby!(m, one(FC), r, β, s) # s = r + β * s
+        kaxpby!(m, one(FC), r, β, s)  # s = r + β * s
       end
 
       γ = γ_next
@@ -218,8 +217,8 @@ kwargs_crmr = (:N, :ldiv, :λ, :atol, :rtol, :itmax, :timemax, :verbose, :histor
       history && push!(rNorms, rNorm)
       history && push!(ArNorms, ArNorm)
       iter = iter + 1
-      kdisplay(iter, verbose) && @printf(iostream, "%5d  %8.2e  %8.2e  %.2fs\n", iter, ArNorm, rNorm, ktimer(start_time))
-      user_requested_exit = callback(solver) :: Bool
+      kdisplay(iter, verbose) && @printf(iostream, "%5d  %8.2e  %8.2e  %.2fs\n", iter, ArNorm, rNorm, start_time |> ktimer)
+      user_requested_exit = callback(workspace) :: Bool
       solved = rNorm ≤ ɛ_c
       inconsistent = (rNorm > 100 * ɛ_c) && (ArNorm ≤ ɛ_i)
       tired = iter ≥ itmax
@@ -239,8 +238,8 @@ kwargs_crmr = (:N, :ldiv, :λ, :atol, :rtol, :itmax, :timemax, :verbose, :histor
     stats.niter = iter
     stats.solved = solved
     stats.inconsistent = inconsistent
-    stats.timer = ktimer(start_time)
+    stats.timer = start_time |> ktimer
     stats.status = status
-    return solver
+    return workspace
   end
 end

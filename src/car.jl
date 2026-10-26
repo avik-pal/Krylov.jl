@@ -1,13 +1,13 @@
-# An implementation of CAR for the solution of hermitian positive definite linear systems.
+# An implementation of CAR for the solution of Hermitian positive definite linear systems.
 #
 # This method is described in
 #
 # A. Montoison, D. Orban and M. A. Saunders
 # MinAres: An Iterative Solver for Symmetric Linear Systems
-# Cahier du GERAD G-2023-40.
+# SIAM Journal on Matrix Analysis and Applications, 46(1), pp. 509--529, 2025.
 #
 # Alexis Montoison, <alexis.montoison@polymtl.ca>
-# Osaka, August 2023.
+# Osaka -- Tokyo, August 2023.
 
 export car, car!
 
@@ -17,7 +17,7 @@ export car, car!
                      atol::T=√eps(T), rtol::T=√eps(T),
                      itmax::Int=0, timemax::Float64=Inf,
                      verbose::Int=0, history::Bool=false,
-                     callback=solver->false, iostream::IO=kstdout)
+                     callback=workspace->false, iostream::IO=kstdout)
 
 `T` is an `AbstractFloat` such as `Float32`, `Float64` or `BigFloat`.
 `FC` is `T` or `Complex{T}`.
@@ -30,14 +30,20 @@ CAR solves the Hermitian and positive definite linear system Ax = b of size n.
 CAR minimizes ‖Arₖ‖₂ when M = Iₙ and ‖AMrₖ‖_M otherwise.
 The estimates computed every iteration are ‖Mrₖ‖₂ and ‖AMrₖ‖_M.
 
+#### Interface
+
+To easily switch between Krylov methods, use the generic interface [`krylov_solve`](@ref) with `method = :car`.
+
+For an in-place variant that reuses memory across solves, see [`car!`](@ref).
+
 #### Input arguments
 
-* `A`: a linear operator that models a Hermitian positive definite matrix of dimension n;
-* `b`: a vector of length n.
+* `A`: a linear operator that models a Hermitian positive definite matrix of dimension `n`;
+* `b`: a vector of length `n`.
 
 #### Optional argument
 
-* `x0`: a vector of length n that represents an initial guess of the solution x.
+* `x0`: a vector of length `n` that represents an initial guess of the solution `x`.
 
 #### Keyword arguments
 
@@ -49,26 +55,30 @@ The estimates computed every iteration are ‖Mrₖ‖₂ and ‖AMrₖ‖_M.
 * `timemax`: the time limit in seconds;
 * `verbose`: additional details can be displayed if verbose mode is enabled (verbose > 0). Information will be displayed every `verbose` iterations;
 * `history`: collect additional statistics on the run such as residual norms, or Aᴴ-residual norms;
-* `callback`: function or functor called as `callback(solver)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
+* `callback`: function or functor called as `callback(workspace)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
 * `iostream`: stream to which output is logged.
 
 #### Output arguments
 
-* `x`: a dense vector of length n;
+* `x`: a dense vector of length `n`;
 * `stats`: statistics collected on the run in a [`SimpleStats`](@ref) structure.
 
 #### Reference
-* A. Montoison, D. Orban and M. A. Saunders, [*MinAres: An Iterative Solver for Symmetric Linear Systems*](https://doi.org/10.13140/RG.2.2.18163.91683), Cahier du GERAD G-2023-40, GERAD, Montréal, 2023.
+
+* A. Montoison, D. Orban and M. A. Saunders, [*MinAres: An Iterative Solver for Symmetric Linear Systems*](https://doi.org/10.1137/23M1605454), SIAM Journal on Matrix Analysis and Applications, 46(1), pp. 509--529, 2025.
 """
 function car end
 
 """
-    solver = car!(solver::CarSolver, A, b; kwargs...)
-    solver = car!(solver::CarSolver, A, b, x0; kwargs...)
+    workspace = car!(workspace::CarWorkspace, A, b; kwargs...)
+    workspace = car!(workspace::CarWorkspace, A, b, x0; kwargs...)
 
-where `kwargs` are keyword arguments of [`car`](@ref).
+In these calls, `kwargs` are keyword arguments of [`car`](@ref).
 
-See [`CarSolver`](@ref) for more details about the `solver`.
+See [`CarWorkspace`](@ref) for instructions on how to create the `workspace`.
+
+For a more generic interface, you can use [`krylov_workspace`](@ref) with `method = :car` to allocate the workspace,
+and [`krylov_solve!`](@ref) to run the Krylov method in-place.
 """
 function car! end
 
@@ -77,53 +87,32 @@ def_args_car = (:(A                    ),
 
 def_optargs_car = (:(x0::AbstractVector),)
 
-def_kwargs_car = (:(; M = I                     ),
-                  :(; ldiv::Bool = false        ),
-                  :(; atol::T = √eps(T)         ),
-                  :(; rtol::T = √eps(T)         ),
-                  :(; itmax::Int = 0            ),
-                  :(; timemax::Float64 = Inf    ),
-                  :(; verbose::Int = 0          ),
-                  :(; history::Bool = false     ),
-                  :(; callback = solver -> false),
-                  :(; iostream::IO = kstdout    ))
+def_kwargs_car = (:(; M = I                        ),
+                  :(; ldiv::Bool = false           ),
+                  :(; atol::T = √eps(T)            ),
+                  :(; rtol::T = √eps(T)            ),
+                  :(; itmax::Int = 0               ),
+                  :(; timemax::Float64 = Inf       ),
+                  :(; verbose::Int = 0             ),
+                  :(; history::Bool = false        ),
+                  :(; callback = workspace -> false),
+                  :(; iostream::IO = kstdout       ))
 
-def_kwargs_car = mapreduce(extract_parameters, vcat, def_kwargs_car)
+def_kwargs_car = extract_parameters.(def_kwargs_car)
 
 args_car = (:A, :b)
 optargs_car = (:x0,)
 kwargs_car = (:M, :ldiv, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback, :iostream)
 
 @eval begin
-  function car($(def_args_car...), $(def_optargs_car...); $(def_kwargs_car...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = CarSolver(A, b)
-    warm_start!(solver, $(optargs_car...))
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    car!(solver, $(args_car...); $(kwargs_car...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.stats)
-  end
-
-  function car($(def_args_car...); $(def_kwargs_car...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = CarSolver(A, b)
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    car!(solver, $(args_car...); $(kwargs_car...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.stats)
-  end
-
-  function car!(solver :: CarSolver{T,FC,S}, $(def_args_car...); $(def_kwargs_car...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
+  function car!(workspace :: CarWorkspace{T,FC,S}, $(def_args_car...); $(def_kwargs_car...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
 
     # Timer
     start_time = time_ns()
     timemax_ns = 1e9 * timemax
 
     m, n = size(A)
-    (m == solver.m && n == solver.n) || error("(solver.m, solver.n) = ($(solver.m), $(solver.n)) is inconsistent with size(A) = ($m, $n)")
+    (m == workspace.m && n == workspace.n) || error("(workspace.m, workspace.n) = ($(workspace.m), $(workspace.n)) is inconsistent with size(A) = ($m, $n)")
     m == n || error("System must be square")
     length(b) == n || error("Inconsistent problem size")
     (verbose > 0) && @printf(iostream, "CAR: system of %d equations in %d variables\n", n, n)
@@ -133,61 +122,63 @@ kwargs_car = (:M, :ldiv, :atol, :rtol, :itmax, :timemax, :verbose, :history, :ca
 
     # Check type consistency
     eltype(A) == FC || @warn "eltype(A) ≠ $FC. This could lead to errors or additional allocations in operator-vector products."
-    ktypeof(b) <: S || error("ktypeof(b) is not a subtype of $S")
+    ktypeof(b) == S || error("ktypeof(b) must be equal to $S")
 
     # Set up workspace.
-    allocate_if(!MisI, solver, :Mu, S, n)
-    Δx, x, r, p, s, q, t, u, stats = solver.Δx, solver.x, solver.r, solver.p, solver.s, solver.q, solver.t, solver.u, solver.stats
-    Mu = MisI ? u : solver.Mu
-    warm_start = solver.warm_start
+    allocate_if(!MisI, workspace, :Mu, S, workspace.x)  # The length of Mu is n
+    Δx, x, r, p, s, q, t, u, stats = workspace.Δx, workspace.x, workspace.r, workspace.p, workspace.s, workspace.q, workspace.t, workspace.u, workspace.stats
+    Mu = MisI ? u : workspace.Mu
+    warm_start = workspace.warm_start
     rNorms, ArNorms = stats.residuals, stats.Aresiduals
     reset!(stats)
 
-    x .= zero(FC)
+    kfill!(x, zero(FC))
     if warm_start
-      mul!(r, A, Δx)
-      @kaxpby!(n, one(FC), b, -one(FC), r)
+      kmul!(r, A, Δx)
+      kaxpby!(n, one(FC), b, -one(FC), r)
     else
-      r .= b
+      kcopy!(n, r, b)  # r ← b
     end
 
-    # p₀ = r₀ = M(b - Ax₀)
+    # p₀ = Mr₀ = M(b - Ax₀)
+    # The vector r stores Mrₖ.
     if MisI
-      p .= r
+      kcopy!(n, p, r)  # p ← r
     else
       mulorldiv!(p, M, r, ldiv)
-      r .= p
+      kcopy!(n, r, p)  # r ← p
     end
 
-    mul!(s, A, r)  # s₀ = Ar₀
+    kmul!(s, A, r)  # s ← AMr₀
 
-    # q₀ = MAp₀ and s₀ = MAr₀
+    # q₀ = MAp₀ and s₀ = MAMr₀
     if MisI
-      q .= s
+      kcopy!(n, q, s)  # q ← s
     else
       mulorldiv!(q, M, s, ldiv)
-      s .= q
+      kcopy!(n, s, q)  # s ← q
     end
 
-    mul!(t, A, s)        # t₀ = As₀
-    u .= t               # u₀ = Aq₀
-    ρ = @kdotr(n, t, s)  # ρ₀ = ⟨t₀ , s₀⟩
+    kmul!(t, A, s)      # t₀ = As₀
+    kcopy!(n, u, t)     # u₀ = Aq₀
+    ρ = kdotr(n, t, s)  # ρ₀ = ⟨t₀ , s₀⟩
 
-    # Compute ‖r₀‖
-    rNorm = @knrm2(n, r)
+    # Compute ‖Mr₀‖₂
+    rNorm = knorm(n, r)
     history && push!(rNorms, rNorm)
 
-    # Compute ‖Ar₀‖
-    ArNorm = MisI ? @knrm2(n, s) : sqrt(@kdotr(n, r, u))
+    # Compute ‖AMr₀‖_M = √⟨Mr₀, t₀⟩
+    ArNorm = MisI ? knorm(n, s) : knorm_elliptic(n, r, t)
     history && push!(ArNorms, ArNorm)
 
     if rNorm == 0
       stats.niter = 0
       stats.solved, stats.inconsistent = true, false
-      stats.timer = ktimer(start_time)
-      stats.status = "x = 0 is a zero-residual solution"
-      solver.warm_start = false
-      return solver
+      stats.timer = start_time |> ktimer
+      stats.status = "x is a zero-residual solution"
+      warm_start && kaxpy!(n, one(FC), Δx, x)
+      workspace.warm_start = false
+      return workspace
     end
 
     iter = 0
@@ -195,7 +186,7 @@ kwargs_car = (:M, :ldiv, :atol, :rtol, :itmax, :timemax, :verbose, :history, :ca
 
     ε = atol + rtol * rNorm
     (verbose > 0) && @printf(iostream, "%5s  %7s  %7s  %7s  %7s  %5s\n", "k", "‖rₖ‖", "‖Arₖ‖", "α", "β", "timer")
-    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7s  %7s  %.2fs\n", iter, rNorm, ArNorm, "✗ ✗ ✗ ✗", "✗ ✗ ✗ ✗", ktimer(start_time))
+    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7s  %7s  %.2fs\n", iter, rNorm, ArNorm, "✗ ✗ ✗ ✗", "✗ ✗ ✗ ✗", start_time |> ktimer)
 
     solved = rNorm ≤ ε
     tired = iter ≥ itmax
@@ -206,42 +197,39 @@ kwargs_car = (:M, :ldiv, :atol, :rtol, :itmax, :timemax, :verbose, :history, :ca
 
     while !(solved || tired || user_requested_exit || overtimed)
       MisI || mulorldiv!(Mu, M, u, ldiv)
-      α = ρ / @kdotr(n, u, Mu)  # αₖ = ρₖ / ⟨uₖ, Muₖ⟩
-      @kaxpy!(n,  α, p, x)      # xₖ₊₁ = xₖ + αₖ * pₖ
-      @kaxpy!(n, -α, q, r)      # rₖ₊₁ = rₖ - αₖ * qₖ
-      @kaxpy!(n, -α, Mu, s)     # sₖ₊₁ = sₖ - αₖ * Muₖ
+      α = ρ / kdotr(n, u, Mu)  # αₖ = ρₖ / ⟨uₖ, Muₖ⟩
+      kaxpy!(n,  α, p, x)      # xₖ₊₁ = xₖ + αₖ * pₖ
+      kaxpy!(n, -α, q, r)      # Mrₖ₊₁ = Mrₖ - αₖ * qₖ
+      kaxpy!(n, -α, Mu, s)     # sₖ₊₁ = sₖ - αₖ * Muₖ
 
-      # Compute ‖rₖ‖
-      rNorm = @knrm2(n, r)
+      # Compute ‖Mrₖ‖₂
+      rNorm = knorm(n, r)
       history && push!(rNorms, rNorm)
 
-      # Stopping conditions that do not depend on user input.
-      # This is to guard against tolerances that are unreasonably small.
-      resid_decrease_mach = (rNorm + one(T) ≤ one(T))
       resid_decrease_lim = rNorm ≤ ε
-      solved = resid_decrease_lim || resid_decrease_mach
+      solved = resid_decrease_lim
 
       if !solved
-        mul!(t, A, s)                  # tₖ₊₁ = A * sₖ₊₁
-        ρ_next = @kdotr(n, t, s)       # ρₖ₊₁ = ⟨tₖ₊₁ , sₖ₊₁⟩
-        β = ρ_next / ρ                 # βₖ = ρₖ₊₁ / ρₖ
+        kmul!(t, A, s)                # tₖ₊₁ = A * sₖ₊₁
+        ρ_next = kdotr(n, t, s)       # ρₖ₊₁ = ⟨tₖ₊₁ , sₖ₊₁⟩
+        β = ρ_next / ρ                # βₖ = ρₖ₊₁ / ρₖ
         ρ = ρ_next
-        @kaxpby!(n, one(FC), r, β, p)  # pₖ₊₁ = rₖ₊₁ + βₖ * pₖ
-        @kaxpby!(n, one(FC), s, β, q)  # qₖ₊₁ = sₖ₊₁ + βₖ * qₖ
-        @kaxpby!(n, one(FC), t, β, u)  # uₖ₊₁ = tₖ₊₁ + βₖ * uₖ
+        kaxpby!(n, one(FC), r, β, p)  # pₖ₊₁ = Mrₖ₊₁ + βₖ * pₖ
+        kaxpby!(n, one(FC), s, β, q)  # qₖ₊₁ = sₖ₊₁ + βₖ * qₖ
+        kaxpby!(n, one(FC), t, β, u)  # uₖ₊₁ = tₖ₊₁ + βₖ * uₖ
 
-        # Compute ‖Arₖ‖
-        ArNorm = MisI ? @knrm2(n, s) : sqrt(@kdotr(n, r, u))
+        # Compute ‖AMrₖ‖_M = √⟨Mrₖ, tₖ⟩
+        ArNorm = MisI ? knorm(n, s) : knorm_elliptic(n, r, t)
         history && push!(ArNorms, ArNorm)
       end
 
       iter = iter + 1
       tired = iter ≥ itmax
-      user_requested_exit = callback(solver) :: Bool
+      user_requested_exit = callback(workspace) :: Bool
       timer = time_ns() - start_time
       overtimed = timer > timemax_ns
-      kdisplay(iter, verbose) && !solved && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %7.1e  %.2fs\n", iter, rNorm, ArNorm, α, β, ktimer(start_time))
-      kdisplay(iter, verbose) &&  solved && @printf(iostream, "%5d  %7.1e  %7s  %7.1e  %7s  %.2fs\n", iter, rNorm, "✗ ✗ ✗ ✗", α, "✗ ✗ ✗ ✗", ktimer(start_time))
+      kdisplay(iter, verbose) && !solved && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %7.1e  %.2fs\n", iter, rNorm, ArNorm, α, β, start_time |> ktimer)
+      kdisplay(iter, verbose) &&  solved && @printf(iostream, "%5d  %7.1e  %7s  %7.1e  %7s  %.2fs\n", iter, rNorm, "✗ ✗ ✗ ✗", α, "✗ ✗ ✗ ✗", start_time |> ktimer)
     end
     (verbose > 0) && @printf(iostream, "\n")
 
@@ -252,15 +240,15 @@ kwargs_car = (:M, :ldiv, :atol, :rtol, :itmax, :timemax, :verbose, :history, :ca
     overtimed           && (status = "time limit exceeded")
 
     # Update x
-    warm_start && @kaxpy!(n, one(FC), Δx, x)
-    solver.warm_start = false
+    warm_start && kaxpy!(n, one(FC), Δx, x)
+    workspace.warm_start = false
 
     # Update stats
     stats.niter = iter
     stats.solved = solved
     stats.inconsistent = inconsistent
-    stats.timer = ktimer(start_time)
+    stats.timer = start_time |> ktimer
     stats.status = status
-    return solver
+    return workspace
   end
 end

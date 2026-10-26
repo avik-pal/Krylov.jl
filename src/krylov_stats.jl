@@ -1,53 +1,70 @@
-export KrylovStats, SimpleStats, LsmrStats, LanczosStats, LanczosShiftStats,
-SymmlqStats, AdjointStats, LNLQStats, LSLQStats
+export SimpleStats, LsmrStats, LanczosStats, LanczosShiftStats, SymmlqStats, AdjointStats, LNLQStats, LSLQStats
 
 import Base.copyto!
 
-"Abstract type for statistics returned by a solver"
+"Abstract type for statistics returned by (block) Krylov solvers."
 abstract type KrylovStats{T} end
 
 """
-Type for statistics returned by the majority of Krylov solvers, the attributes are:
-- niter
-- solved
-- inconsistent
-- residuals
-- Aresiduals
-- Acond
-- timer
-- status
+Type for storing statistics returned by the majority of (block) Krylov solvers.
+
+The fields are as follows:
+- `niter`: The total number of iterations completed by the solver;
+- `solved`: Indicates whether the solver successfully reached convergence (`true` if solved, `false` otherwise);
+- `inconsistent`: Flags whether the system was detected as inconsistent (i.e., when `b` is not in the range of `A`);
+- `indefinite`: Flags whether the system was detected as indefinite (i.e., when `A` is not positive definite);
+- `npcCount`: The number of nonpositive curvature directions encountered during the solve;
+- `residuals`: A vector containing the residual norms at each iteration;
+- `Aresiduals`: A vector of `A'`-residual norms at each iteration;
+- `qvals`: A vector of quadratic model values at each iteration;
+- `Acond`: An estimate of the condition number of matrix `A`.
+- `allocation_timer`: The elapsed time (in seconds) spent on allocations;
+- `timer`: The elapsed time (in seconds) taken by the solver to complete all iterations;
+- `status`: A string indicating the outcome of the solve, providing additional details beyond `solved`.
 """
 mutable struct SimpleStats{T} <: KrylovStats{T}
-  niter        :: Int
-  solved       :: Bool
-  inconsistent :: Bool
-  residuals    :: Vector{T}
-  Aresiduals   :: Vector{T}
-  Acond        :: Vector{T}
-  timer        :: Float64
-  status       :: String
+  niter            :: Int
+  solved           :: Bool
+  inconsistent     :: Bool
+  indefinite       :: Bool
+  npcCount         :: Int
+  residuals        :: Vector{T}
+  Aresiduals       :: Vector{T}
+  qvals            :: Vector{T}
+  Acond            :: Vector{T}
+  allocation_timer :: Float64
+  timer            :: Float64
+  status           :: String
 end
 
 function reset!(stats :: SimpleStats)
   empty!(stats.residuals)
   empty!(stats.Aresiduals)
+  empty!(stats.qvals)
   empty!(stats.Acond)
+  stats.indefinite = false
+  stats.npcCount = 0
 end
 
 function copyto!(dest :: SimpleStats, src :: SimpleStats)
-  dest.niter        = src.niter
-  dest.solved       = src.solved
-  dest.inconsistent = src.inconsistent
-  dest.residuals    = copy(src.residuals)
-  dest.Aresiduals   = copy(src.Aresiduals)
-  dest.Acond        = copy(src.Acond)
-  dest.timer        = src.timer
-  dest.status       = src.status
+  dest.niter            = src.niter
+  dest.solved           = src.solved
+  dest.inconsistent     = src.inconsistent
+  dest.indefinite       = src.indefinite
+  dest.npcCount         = src.npcCount
+  dest.residuals        = copy(src.residuals)
+  dest.Aresiduals       = copy(src.Aresiduals)
+  dest.qvals            = copy(src.qvals)
+  dest.Acond            = copy(src.Acond)
+  dest.allocation_timer = src.allocation_timer
+  dest.timer            = src.timer
+  dest.status           = src.status
   return dest
 end
 
 """
-Type for statistics returned by LSMR. The attributes are:
+Type for storing statistics returned by LSMR.
+The fields are as follows:
 - niter
 - solved
 - inconsistent
@@ -56,22 +73,24 @@ Type for statistics returned by LSMR. The attributes are:
 - Acond
 - Anorm
 - xNorm
+- allocation_timer
 - timer
 - status
 """
 mutable struct LsmrStats{T} <: KrylovStats{T}
-  niter        :: Int
-  solved       :: Bool
-  inconsistent :: Bool
-  residuals    :: Vector{T}
-  Aresiduals   :: Vector{T}
-  residual     :: T
-  Aresidual    :: T
-  Acond        :: T
-  Anorm        :: T
-  xNorm        :: T
-  timer        :: Float64
-  status       :: String
+  niter            :: Int
+  solved           :: Bool
+  inconsistent     :: Bool
+  residuals        :: Vector{T}
+  Aresiduals       :: Vector{T}
+  residual         :: T
+  Aresidual        :: T
+  Acond            :: T
+  Anorm            :: T
+  xNorm            :: T
+  allocation_timer :: Float64
+  timer            :: Float64
+  status           :: String
 end
 
 function reset!(stats :: LsmrStats)
@@ -80,41 +99,45 @@ function reset!(stats :: LsmrStats)
 end
 
 function copyto!(dest :: LsmrStats, src :: LsmrStats)
-  dest.niter        = src.niter
-  dest.solved       = src.solved
-  dest.inconsistent = src.inconsistent
-  dest.residuals    = copy(src.residuals)
-  dest.Aresiduals   = copy(src.Aresiduals)
-  dest.residual     = src.residual
-  dest.Aresidual    = src.Aresidual
-  dest.Acond        = src.Acond
-  dest.Anorm        = src.Anorm
-  dest.xNorm        = src.xNorm
-  dest.timer        = src.timer
-  dest.status       = src.status
+  dest.niter            = src.niter
+  dest.solved           = src.solved
+  dest.inconsistent     = src.inconsistent
+  dest.residuals        = copy(src.residuals)
+  dest.Aresiduals       = copy(src.Aresiduals)
+  dest.residual         = src.residual
+  dest.Aresidual        = src.Aresidual
+  dest.Acond            = src.Acond
+  dest.Anorm            = src.Anorm
+  dest.xNorm            = src.xNorm
+  dest.allocation_timer = src.allocation_timer
+  dest.timer            = src.timer
+  dest.status           = src.status
   return dest
 end
 
 """
-Type for statistics returned by CG-LANCZOS, the attributes are:
+Type for storing statistics returned by CG-LANCZOS.
+The fields are as follows:
 - niter
 - solved
 - residuals
 - indefinite
 - Anorm
 - Acond
+- allocation_timer
 - timer
 - status
 """
 mutable struct LanczosStats{T} <: KrylovStats{T}
-  niter      :: Int
-  solved     :: Bool
-  residuals  :: Vector{T}
-  indefinite :: Bool
-  Anorm      :: T
-  Acond      :: T
-  timer      :: Float64
-  status     :: String
+  niter            :: Int
+  solved           :: Bool
+  residuals        :: Vector{T}
+  indefinite       :: Bool
+  Anorm            :: T
+  Acond            :: T
+  allocation_timer :: Float64
+  timer            :: Float64
+  status           :: String
 end
 
 function reset!(stats :: LanczosStats)
@@ -122,37 +145,41 @@ function reset!(stats :: LanczosStats)
 end
 
 function copyto!(dest :: LanczosStats, src :: LanczosStats)
-  dest.niter      = src.niter
-  dest.solved     = src.solved
-  dest.residuals  = copy(src.residuals)
-  dest.indefinite = src.indefinite
-  dest.Anorm      = src.Anorm
-  dest.Acond      = src.Acond
-  dest.timer      = src.timer
-  dest.status     = src.status
+  dest.niter            = src.niter
+  dest.solved           = src.solved
+  dest.residuals        = copy(src.residuals)
+  dest.indefinite       = src.indefinite
+  dest.Anorm            = src.Anorm
+  dest.Acond            = src.Acond
+  dest.allocation_timer = src.allocation_timer
+  dest.timer            = src.timer
+  dest.status           = src.status
   return dest
 end
 
 """
-Type for statistics returned by CG-LANCZOS with shifts, the attributes are:
+Type for storing statistics returned by CG-LANCZOS-SHIFT and CGLS-LANCZOS-SHIFT.
+The fields are as follows:
 - niter
 - solved
 - residuals
 - indefinite
 - Anorm
 - Acond
+- allocation_timer
 - timer
 - status
 """
 mutable struct LanczosShiftStats{T} <: KrylovStats{T}
-  niter      :: Int
-  solved     :: Bool
-  residuals  :: Vector{Vector{T}}
-  indefinite :: BitVector
-  Anorm      :: T
-  Acond      :: T
-  timer      :: Float64
-  status     :: String
+  niter            :: Int
+  solved           :: Bool
+  residuals        :: Vector{Vector{T}}
+  indefinite       :: BitVector
+  Anorm            :: T
+  Acond            :: T
+  allocation_timer :: Float64
+  timer            :: Float64
+  status           :: String
 end
 
 function reset!(stats :: LanczosShiftStats)
@@ -162,19 +189,21 @@ function reset!(stats :: LanczosShiftStats)
 end
 
 function copyto!(dest :: LanczosShiftStats, src :: LanczosShiftStats)
-  dest.niter      = src.niter
-  dest.solved     = src.solved
-  dest.residuals  = deepcopy(src.residuals)
-  dest.indefinite = src.indefinite
-  dest.Anorm      = src.Anorm
-  dest.Acond      = src.Acond
-  dest.timer      = src.timer
-  dest.status     = src.status
+  dest.niter            = src.niter
+  dest.solved           = src.solved
+  dest.residuals        = deepcopy(src.residuals)
+  dest.indefinite       = src.indefinite
+  dest.Anorm            = src.Anorm
+  dest.Acond            = src.Acond
+  dest.allocation_timer = src.allocation_timer
+  dest.timer            = src.timer
+  dest.status           = src.status
   return dest
 end
 
 """
-Type for statistics returned by SYMMLQ, the attributes are:
+Type for storing statistics returned by SYMMLQ.
+The fields are as follows:
 - niter
 - solved
 - residuals
@@ -183,20 +212,22 @@ Type for statistics returned by SYMMLQ, the attributes are:
 - errorscg
 - Anorm
 - Acond
+- allocation_timer
 - timer
 - status
 """
 mutable struct SymmlqStats{T} <: KrylovStats{T}
-  niter       :: Int
-  solved      :: Bool
-  residuals   :: Vector{T}
-  residualscg :: Vector{Union{T, Missing}}
-  errors      :: Vector{T}
-  errorscg    :: Vector{Union{T, Missing}}
-  Anorm       :: T
-  Acond       :: T
-  timer       :: Float64
-  status      :: String
+  niter            :: Int
+  solved           :: Bool
+  residuals        :: Vector{T}
+  residualscg      :: Vector{Union{T, Missing}}
+  errors           :: Vector{T}
+  errorscg         :: Vector{Union{T, Missing}}
+  Anorm            :: T
+  Acond            :: T
+  allocation_timer :: Float64
+  timer            :: Float64
+  status           :: String
 end
 
 function reset!(stats :: SymmlqStats)
@@ -207,26 +238,29 @@ function reset!(stats :: SymmlqStats)
 end
 
 function copyto!(dest :: SymmlqStats, src :: SymmlqStats)
-  dest.niter       = src.niter
-  dest.solved      = src.solved
-  dest.residuals   = copy(src.residuals)
-  dest.residualscg = copy(src.residualscg)
-  dest.errors      = copy(src.errors)
-  dest.errorscg    = copy(src.errorscg)
-  dest.Anorm       = src.Anorm
-  dest.Acond       = src.Acond
-  dest.timer       = src.timer
-  dest.status      = src.status
+  dest.niter            = src.niter
+  dest.solved           = src.solved
+  dest.residuals        = copy(src.residuals)
+  dest.residualscg      = copy(src.residualscg)
+  dest.errors           = copy(src.errors)
+  dest.errorscg         = copy(src.errorscg)
+  dest.Anorm            = src.Anorm
+  dest.Acond            = src.Acond
+  dest.allocation_timer = src.allocation_timer
+  dest.timer            = src.timer
+  dest.status           = src.status
   return dest
 end
 
 """
-Type for statistics returned by adjoint systems solvers BiLQR and TriLQR, the attributes are:
+Type for storing statistics returned by adjoint systems solvers BiLQR and TriLQR.
+The fields are as follows:
 - niter
 - solved_primal
 - solved_dual
 - residuals_primal
 - residuals_dual
+- allocation_timer
 - timer
 - status
 """
@@ -236,6 +270,7 @@ mutable struct AdjointStats{T} <: KrylovStats{T}
   solved_dual      :: Bool
   residuals_primal :: Vector{T}
   residuals_dual   :: Vector{T}
+  allocation_timer :: Float64
   timer            :: Float64
   status           :: String
 end
@@ -251,6 +286,7 @@ function copyto!(dest :: AdjointStats, src :: AdjointStats)
   dest.solved_dual      = src.solved_dual
   dest.residuals_primal = copy(src.residuals_primal)
   dest.residuals_dual   = copy(src.residuals_dual)
+  dest.allocation_timer = src.allocation_timer
   dest.timer            = src.timer
   dest.status           = src.status
   return dest
@@ -258,25 +294,28 @@ end
 
 
 """
-Type for statistics returned by the LNLQ method, the attributes are:
+Type for storing statistics returned by the LNLQ method.
+The fields are as follows:
 - niter
 - solved
 - residuals
 - error_with_bnd
 - error_bnd_x
 - error_bnd_y
+- allocation_timer
 - timer
 - status
 """
 mutable struct LNLQStats{T} <: KrylovStats{T}
-  niter          :: Int
-  solved         :: Bool
-  residuals      :: Vector{T}
-  error_with_bnd :: Bool
-  error_bnd_x    :: Vector{T}
-  error_bnd_y    :: Vector{T}
-  timer          :: Float64
-  status         :: String
+  niter            :: Int
+  solved           :: Bool
+  residuals        :: Vector{T}
+  error_with_bnd   :: Bool
+  error_bnd_x      :: Vector{T}
+  error_bnd_y      :: Vector{T}
+  allocation_timer :: Float64
+  timer            :: Float64
+  status           :: String
 end
 
 function reset!(stats :: LNLQStats)
@@ -286,19 +325,21 @@ function reset!(stats :: LNLQStats)
 end
 
 function copyto!(dest :: LNLQStats, src :: LNLQStats)
-  dest.niter          = src.niter
-  dest.solved         = src.solved
-  dest.residuals      = copy(src.residuals)
-  dest.error_with_bnd = src.error_with_bnd
-  dest.error_bnd_x    = copy(src.error_bnd_x)
-  dest.error_bnd_y    = copy(src.error_bnd_y)
-  dest.timer          = src.timer
-  dest.status         = src.status
+  dest.niter            = src.niter
+  dest.solved           = src.solved
+  dest.residuals        = copy(src.residuals)
+  dest.error_with_bnd   = src.error_with_bnd
+  dest.error_bnd_x      = copy(src.error_bnd_x)
+  dest.error_bnd_y      = copy(src.error_bnd_y)
+  dest.allocation_timer = src.allocation_timer
+  dest.timer            = src.timer
+  dest.status           = src.status
   return dest
 end
 
 """
-Type for statistics returned by the LSLQ method, the attributes are:
+Type for storing statistics returned by the LSLQ method.
+The fields are as follows:
 - niter
 - solved
 - inconsistent
@@ -308,21 +349,23 @@ Type for statistics returned by the LSLQ method, the attributes are:
 - error_with_bnd
 - err_ubnds_lq
 - err_ubnds_cg
+- allocation_timer
 - timer
 - status
 """
 mutable struct LSLQStats{T} <: KrylovStats{T}
-  niter          :: Int
-  solved         :: Bool
-  inconsistent   :: Bool
-  residuals      :: Vector{T}
-  Aresiduals     :: Vector{T}
-  err_lbnds      :: Vector{T}
-  error_with_bnd :: Bool
-  err_ubnds_lq   :: Vector{T}
-  err_ubnds_cg   :: Vector{T}
-  timer          :: Float64
-  status         :: String
+  niter            :: Int
+  solved           :: Bool
+  inconsistent     :: Bool
+  residuals        :: Vector{T}
+  Aresiduals       :: Vector{T}
+  err_lbnds        :: Vector{T}
+  error_with_bnd   :: Bool
+  err_ubnds_lq     :: Vector{T}
+  err_ubnds_cg     :: Vector{T}
+  allocation_timer :: Float64
+  timer            :: Float64
+  status           :: String
 end
 
 function reset!(stats :: LSLQStats)
@@ -334,53 +377,17 @@ function reset!(stats :: LSLQStats)
 end
 
 function copyto!(dest :: LSLQStats, src :: LSLQStats)
-  dest.niter          = src.niter
-  dest.solved         = src.solved
-  dest.inconsistent   = src.inconsistent
-  dest.residuals      = copy(src.residuals)
-  dest.Aresiduals     = copy(src.Aresiduals)
-  dest.err_lbnds      = copy(src.err_lbnds)
-  dest.error_with_bnd = src.error_with_bnd
-  dest.err_ubnds_lq   = copy(src.err_ubnds_lq)
-  dest.err_ubnds_cg   = copy(src.err_ubnds_cg)
-  dest.timer          = src.timer
-  dest.status         = src.status
+  dest.niter            = src.niter
+  dest.solved           = src.solved
+  dest.inconsistent     = src.inconsistent
+  dest.residuals        = copy(src.residuals)
+  dest.Aresiduals       = copy(src.Aresiduals)
+  dest.err_lbnds        = copy(src.err_lbnds)
+  dest.error_with_bnd   = src.error_with_bnd
+  dest.err_ubnds_lq     = copy(src.err_ubnds_lq)
+  dest.err_ubnds_cg     = copy(src.err_ubnds_cg)
+  dest.allocation_timer = src.allocation_timer
+  dest.timer            = src.timer
+  dest.status           = src.status
   return dest
-end
-
-import Base.show
-
-special_fields = Dict(
-  :residualscg => "residuals (cg)",
-  :errorscg => "errors (cg)",
-  :Anorm => "‖A‖F",
-  :Acond => "κ₂(A)",
-  :err_ubnds_lq => "error bound LQ",
-  :err_ubnds_cg => "error bound CG",
-)
-
-function show(io :: IO, stats :: KrylovStats)
-  kst = typeof(stats)
-  s = string(kst.name.name) * "\n"
-  nfield = fieldcount(kst)
-  for i = 1 : nfield
-    field = fieldname(kst, i)
-    field_name = if field ∈ keys(special_fields)
-      special_fields[field]
-    else
-      replace(string(field), "_" => " ")
-    end
-    s *=  " " * field_name * ":"
-    statfield = getfield(stats, field)
-    if isa(statfield, AbstractVector) && eltype(statfield) <: Union{Missing, AbstractFloat}
-      s *= @sprintf " %s\n" vec2str(statfield)
-    elseif field_name == "timer"
-      (statfield < 1e-3) && (s *= @sprintf " %.2fμs\n" 1e6*statfield)
-      (1e-3 ≤ statfield < 1.00) && (s *= @sprintf " %.2fms\n" 1e3*statfield)
-      (statfield ≥ 1.00) && (s *= @sprintf " %.2fs\n" statfield)
-    else
-      s *= @sprintf " %s\n" statfield
-    end
-  end
-  print(io, s)
 end

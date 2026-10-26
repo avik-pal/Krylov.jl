@@ -34,7 +34,7 @@ export cgne, cgne!
                       λ::T=zero(T), atol::T=√eps(T),
                       rtol::T=√eps(T), itmax::Int=0,
                       timemax::Float64=Inf, verbose::Int=0, history::Bool=false,
-                      callback=solver->false, iostream::IO=kstdout)
+                      callback=workspace->false, iostream::IO=kstdout)
 
 `T` is an `AbstractFloat` such as `Float32`, `Float64` or `BigFloat`.
 `FC` is `T` or `Complex{T}`.
@@ -61,14 +61,20 @@ CGNE produces monotonic errors ‖x-x*‖₂ but not residuals ‖r‖₂.
 It is formally equivalent to CRAIG, though can be slightly less accurate,
 but simpler to implement. Only the x-part of the solution is returned.
 
+#### Interface
+
+To easily switch between Krylov methods, use the generic interface [`krylov_solve`](@ref) with `method = :cgne`.
+
+For an in-place variant that reuses memory across solves, see [`cgne!`](@ref).
+
 #### Input arguments
 
-* `A`: a linear operator that models a matrix of dimension m × n;
-* `b`: a vector of length m.
+* `A`: a linear operator that models a matrix of dimension `m × n`;
+* `b`: a vector of length `m`.
 
 #### Keyword arguments
 
-* `N`: linear operator that models a Hermitian positive-definite matrix of size `n` used for preconditioning;
+* `N`: linear operator that models a Hermitian positive-definite matrix of size `m` used for preconditioning;
 * `ldiv`: define whether the preconditioner uses `ldiv!` or `mul!`;
 * `λ`: regularization parameter;
 * `atol`: absolute stopping tolerance based on the residual norm;
@@ -77,12 +83,12 @@ but simpler to implement. Only the x-part of the solution is returned.
 * `timemax`: the time limit in seconds;
 * `verbose`: additional details can be displayed if verbose mode is enabled (verbose > 0). Information will be displayed every `verbose` iterations;
 * `history`: collect additional statistics on the run such as residual norms, or Aᴴ-residual norms;
-* `callback`: function or functor called as `callback(solver)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
+* `callback`: function or functor called as `callback(workspace)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
 * `iostream`: stream to which output is logged.
 
 #### Output arguments
 
-* `x`: a dense vector of length n;
+* `x`: a dense vector of length `n`;
 * `stats`: statistics collected on the run in a [`SimpleStats`](@ref) structure.
 
 #### References
@@ -93,53 +99,46 @@ but simpler to implement. Only the x-part of the solution is returned.
 function cgne end
 
 """
-    solver = cgne!(solver::CgneSolver, A, b; kwargs...)
+    workspace = cgne!(workspace::CgneWorkspace, A, b; kwargs...)
 
-where `kwargs` are keyword arguments of [`cgne`](@ref).
+In this call, `kwargs` are keyword arguments of [`cgne`](@ref).
 
-See [`CgneSolver`](@ref) for more details about the `solver`.
+See [`CgneWorkspace`](@ref) for instructions on how to create the `workspace`.
+
+For a more generic interface, you can use [`krylov_workspace`](@ref) with `method = :cgne` to allocate the workspace,
+and [`krylov_solve!`](@ref) to run the Krylov method in-place.
 """
 function cgne! end
 
 def_args_cgne = (:(A                    ),
                  :(b::AbstractVector{FC}))
 
-def_kwargs_cgne = (:(; N = I                     ),
-                   :(; ldiv::Bool = false        ),
-                   :(; λ::T = zero(T)            ),
-                   :(; atol::T = √eps(T)         ),
-                   :(; rtol::T = √eps(T)         ),
-                   :(; itmax::Int = 0            ),
-                   :(; timemax::Float64 = Inf    ),
-                   :(; verbose::Int = 0          ),
-                   :(; history::Bool = false     ),
-                   :(; callback = solver -> false),
-                   :(; iostream::IO = kstdout    ))
+def_kwargs_cgne = (:(; N = I                        ),
+                   :(; ldiv::Bool = false           ),
+                   :(; λ::T = zero(T)               ),
+                   :(; atol::T = √eps(T)            ),
+                   :(; rtol::T = √eps(T)            ),
+                   :(; itmax::Int = 0               ),
+                   :(; timemax::Float64 = Inf       ),
+                   :(; verbose::Int = 0             ),
+                   :(; history::Bool = false        ),
+                   :(; callback = workspace -> false),
+                   :(; iostream::IO = kstdout       ))
 
-def_kwargs_cgne = mapreduce(extract_parameters, vcat, def_kwargs_cgne)
+def_kwargs_cgne = extract_parameters.(def_kwargs_cgne)
 
 args_cgne = (:A, :b)
 kwargs_cgne = (:N, :ldiv, :λ, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback, :iostream)
 
 @eval begin
-  function cgne($(def_args_cgne...); $(def_kwargs_cgne...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = CgneSolver(A, b)
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    cgne!(solver, $(args_cgne...); $(kwargs_cgne...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.stats)
-  end
-
-  function cgne!(solver :: CgneSolver{T,FC,S}, $(def_args_cgne...); $(def_kwargs_cgne...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
+  function cgne!(workspace :: CgneWorkspace{T,FC,Sm,Sn}, $(def_args_cgne...); $(def_kwargs_cgne...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, Sm <: AbstractVector{FC}, Sn <: AbstractVector{FC}}
 
     # Timer
     start_time = time_ns()
     timemax_ns = 1e9 * timemax
 
     m, n = size(A)
-    (m == solver.m && n == solver.n) || error("(solver.m, solver.n) = ($(solver.m), $(solver.n)) is inconsistent with size(A) = ($m, $n)")
+    (m == workspace.m && n == workspace.n) || error("(workspace.m, workspace.n) = ($(workspace.m), $(workspace.n)) is inconsistent with size(A) = ($m, $n)")
     length(b) == m || error("Inconsistent problem size")
     (verbose > 0) && @printf(iostream, "CGNE: system of %d equations in %d variables\n", m, n)
 
@@ -148,49 +147,49 @@ kwargs_cgne = (:N, :ldiv, :λ, :atol, :rtol, :itmax, :timemax, :verbose, :histor
 
     # Check type consistency
     eltype(A) == FC || @warn "eltype(A) ≠ $FC. This could lead to errors or additional allocations in operator-vector products."
-    ktypeof(b) <: S || error("ktypeof(b) is not a subtype of $S")
+    ktypeof(b) == Sm || error("ktypeof(b) must be equal to $Sm")
 
     # Compute the adjoint of A
     Aᴴ = A'
 
     # Set up workspace.
-    allocate_if(!NisI, solver, :z, S, m)
-    allocate_if(λ > 0, solver, :s, S, m)
-    x, p, Aᴴz, r, q, s, stats = solver.x, solver.p, solver.Aᴴz, solver.r, solver.q, solver.s, solver.stats
+    allocate_if(!NisI, workspace, :z, Sm, workspace.r)  # The length of z is m
+    allocate_if(λ > 0, workspace, :s, Sm, workspace.r)  # The length of s is m
+    x, p, Aᴴz, r, q, s, stats = workspace.x, workspace.p, workspace.Aᴴz, workspace.r, workspace.q, workspace.s, workspace.stats
     rNorms = stats.residuals
     reset!(stats)
-    z = NisI ? r : solver.z
+    z = NisI ? r : workspace.z
 
-    x .= zero(FC)
-    r .= b
+    kfill!(x, zero(FC))
+    kcopy!(m, r, b)  # r ← b
     NisI || mulorldiv!(z, N, r, ldiv)
-    rNorm = @knrm2(m, r)   # Marginally faster than norm(r)
+    rNorm = knorm(m, r)  # Marginally faster than norm(r)
     history && push!(rNorms, rNorm)
     if rNorm == 0
       stats.niter = 0
       stats.solved, stats.inconsistent = true, false
-      stats.timer = ktimer(start_time)
-      stats.status = "x = 0 is a zero-residual solution"
-      return solver
+      stats.timer = start_time |> ktimer
+      stats.status = "x is a zero-residual solution"
+      return workspace
     end
-    λ > 0 && (s .= r)
-    mul!(p, Aᴴ, z)
+    λ > 0 && kcopy!(m, s, r)  # s ← r
+    kmul!(p, Aᴴ, z)
 
     # Use ‖p‖ to detect inconsistent system.
-    # An inconsistent system will necessarily have AA' singular.
-    # Because CGNE is equivalent to CG applied to AA'y = b, there will be a
-    # conjugate direction u such that u'AA'u = 0, i.e., A'u = 0. In this
-    # implementation, p is a substitute for A'u.
-    pNorm = @knrm2(n, p)
+    # An inconsistent system will necessarily have AAᴴ singular.
+    # Because CGNE is equivalent to CG applied to AAᴴy = b, there will be a
+    # conjugate direction u such that uᴴAAᴴu = 0, i.e., Aᴴu = 0. In this
+    # implementation, p is a substitute for Aᴴu.
+    pNorm = knorm(n, p)
 
-    γ = @kdotr(m, r, z)  # Faster than γ = dot(r, z)
+    γ = kdotr(m, r, z)  # Faster than γ = dot(r, z)
     iter = 0
     itmax == 0 && (itmax = m + n)
 
     ɛ_c = atol + rtol * rNorm  # Stopping tolerance for consistent systems.
     ɛ_i = atol + rtol * pNorm  # Stopping tolerance for inconsistent systems.
     (verbose > 0) && @printf(iostream, "%5s  %8s  %5s\n", "k", "‖r‖", "timer")
-    kdisplay(iter, verbose) && @printf(iostream, "%5d  %8.2e  %.2fs\n", iter, rNorm, ktimer(start_time))
+    kdisplay(iter, verbose) && @printf(iostream, "%5d  %8.2e  %.2fs\n", iter, rNorm, start_time |> ktimer)
 
     status = "unknown"
     solved = rNorm ≤ ɛ_c
@@ -200,35 +199,31 @@ kwargs_cgne = (:N, :ldiv, :λ, :atol, :rtol, :itmax, :timemax, :verbose, :histor
     overtimed = false
 
     while ! (solved || inconsistent || tired || user_requested_exit || overtimed)
-      mul!(q, A, p)
-      λ > 0 && @kaxpy!(m, λ, s, q)
-      δ = @kdotr(n, p, p)   # Faster than dot(p, p)
-      λ > 0 && (δ += λ * @kdotr(m, s, s))
+      kmul!(q, A, p)
+      λ > 0 && kaxpy!(m, λ, s, q)
+      δ = kdotr(n, p, p)   # Faster than dot(p, p)
+      λ > 0 && (δ += λ * kdotr(m, s, s))
       α = γ / δ
-      @kaxpy!(n,  α, p, x)     # Faster than x = x + α * p
-      @kaxpy!(m, -α, q, r)     # Faster than r = r - α * q
+      kaxpy!(n,  α, p, x)  # Faster than x = x + α * p
+      kaxpy!(m, -α, q, r)  # Faster than r = r - α * q
       NisI || mulorldiv!(z, N, r, ldiv)
-      γ_next = @kdotr(m, r, z)  # Faster than γ_next = dot(r, z)
+      γ_next = kdotr(m, r, z)  # Faster than γ_next = dot(r, z)
       β = γ_next / γ
-      mul!(Aᴴz, Aᴴ, z)
-      @kaxpby!(n, one(FC), Aᴴz, β, p)  # Faster than p = Aᴴz + β * p
-      pNorm = @knrm2(n, p)
+      kmul!(Aᴴz, Aᴴ, z)
+      kaxpby!(n, one(FC), Aᴴz, β, p)  # Faster than p = Aᴴz + β * p
+      pNorm = knorm(n, p)
       if λ > 0
-        @kaxpby!(m, one(FC), r, β, s)  # s = r + β * s
+        kaxpby!(m, one(FC), r, β, s)  # s = r + β * s
       end
       γ = γ_next
       rNorm = sqrt(γ_next)
       history && push!(rNorms, rNorm)
       iter = iter + 1
-      kdisplay(iter, verbose) && @printf(iostream, "%5d  %8.2e  %.2fs\n", iter, rNorm, ktimer(start_time))
+      kdisplay(iter, verbose) && @printf(iostream, "%5d  %8.2e  %.2fs\n", iter, rNorm, start_time |> ktimer)
 
-      # Stopping conditions that do not depend on user input.
-      # This is to guard against tolerances that are unreasonably small.
-      resid_decrease_mach = (rNorm + one(T) ≤ one(T))
-
-      user_requested_exit = callback(solver) :: Bool
+      user_requested_exit = callback(workspace) :: Bool
       resid_decrease_lim = rNorm ≤ ɛ_c
-      solved = resid_decrease_lim || resid_decrease_mach
+      solved = resid_decrease_lim
       inconsistent = (rNorm > 100 * ɛ_c) && (pNorm ≤ ɛ_i)
       tired = iter ≥ itmax
       timer = time_ns() - start_time
@@ -247,8 +242,8 @@ kwargs_cgne = (:N, :ldiv, :λ, :atol, :rtol, :itmax, :timemax, :verbose, :histor
     stats.niter = iter
     stats.solved = solved
     stats.inconsistent = inconsistent
-    stats.timer = ktimer(start_time)
+    stats.timer = start_time |> ktimer
     stats.status = status
-    return solver
+    return workspace
   end
 end

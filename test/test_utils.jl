@@ -1,7 +1,18 @@
+using Krylov
+
 include("get_div_grad.jl")
 include("gen_lsq.jl")
 include("check_min_norm.jl")
 include("callback_utils.jl")
+
+struct TestVector{T} <: AbstractVector{T}
+    data::Vector{T}
+end
+TestVector{T}(::UndefInitializer, n::Integer) where {T} = TestVector{T}(Vector{T}(undef, n))
+Base.size(v::TestVector) = size(v.data)
+Base.getindex(v::TestVector, i::Int) = v.data[i]
+Base.setindex!(v::TestVector, val, i::Int) = (v.data[i] = val)
+Base.similar(v::TestVector, ::Type{S}, dims::Dims) where {S} = TestVector{S}(similar(v.data, S, dims))
 
 # Symmetric and positive definite systems.
 function symmetric_definite(n :: Int=10; FC=Float64)
@@ -12,11 +23,49 @@ function symmetric_definite(n :: Int=10; FC=Float64)
 end
 
 # Symmetric and indefinite systems.
-function symmetric_indefinite(n :: Int=10; FC=Float64)
+function symmetric_indefinite(n :: Int=10; FC=Float64,  shift=0)
   α = FC <: Complex ? FC(im) : one(FC)
-  A = spdiagm(-1 => α * ones(FC, n-1), 0 => ones(FC, n), 1 => conj(α) * ones(FC, n-1))
+  A = spdiagm(-1 => α * ones(FC, n-1), 0 => ones(FC, n), 1 => conj(α) * ones(FC, n-1))- shift * eye(n)
   b = A * FC[1:n;]
   return A, b
+end
+
+"""
+    system_zero_quad(n::Int=2; FC=Float64)
+
+Creates an n×n symmetric matrix `A` and vector `b` (with n ≥ 2) such that:
+- `A ≠ 0` and `b ≠ 0`
+- `b^T * A * b == 0`
+
+The construction embeds a 2×2 block in the upper-left corner where
+
+    A[1,1] = 1   and   A[2,2] = -1,
+
+and defines
+
+    b[1] = 1   and   b[2] = 1,
+
+with all other entries equal to zero.
+
+Example usage:
+    A, b = system_zero_quad(5, FC=Float64)
+    println("A =")
+    println(Matrix(A))
+    println("b = ", b)
+    println("b^T * A * b = ", b' * A * b)
+"""
+function system_zero_quad(n::Int=2; FC=Float64)
+    if n < 2
+        error("n must be at least 2")
+    end
+    A = zeros(FC, n, n)
+    # Define a 2×2 nontrivial block that is symmetric and indefinite.
+    A[1, 1] = one(FC)
+    A[2, 2] = -one(FC)
+    b = zeros(FC, n)
+    b[1] = one(FC)
+    b[2] = one(FC)
+    return A, b
 end
 
 # Nonsymmetric and positive definite systems.
@@ -176,7 +225,7 @@ function square_adjoint(n :: Int=100; FC=Float64)
   return A, b, c
 end
 
-# Adjoint systems with Ax = b underdetermined consistent and Aᴴt = c overdetermined insconsistent.
+# Adjoint systems with Ax = b underdetermined consistent and Aᴴt = c overdetermined inconsistent.
 function rectangular_adjoint(n :: Int=10, m :: Int=25; FC=Float64)
   Aᴴ, c = over_inconsistent(m, n; FC=FC)
   A = adjoint(Aᴴ)
@@ -338,21 +387,42 @@ end
 # Test warm-start feature with linear systems of size n³.
 function warm_start(n :: Int=8; FC=Float64)
   A = get_div_grad(n, n, n)
-  b = A * ones(n^3)
+  A = FC.(A)
+  b = A * ones(FC, n^3)
   return A, b
 end
 
 # Generate a breakdown in the orthogonal tridiagonalization process and the orthogonal Hessenberg reduction process.
 function ssy_mo_breakdown(transpose :: Bool=false; FC=Float64)
   if transpose
-    A = [1.0 -1.0; 0.0 1.0; -1.0 0.0]
+    A = FC[1 -1; 0 1; -1 0]
   else
-    A = [1.0 0.0 -1.0; -1.0 1.0 0.0]
+    A = FC[1 0 -1; -1 1 0]
   end
   n, m = size(A)
-  b = ones(n)
-  c = ones(m)
+  b = ones(FC, n)
+  c = ones(FC, m)
   return A, b, c
+end
+
+function ssy_mo_breakdown2(FC=Float64)
+  A = FC[-1 2 0; 1 -1 1; 0 0 -1]
+  b = FC[1; 0; 0]
+  c = FC[1; 0; 0]
+  return A, b, c
+end
+
+function ssy_mo_breakdown3(FC=Float64)
+  A = FC[-1 1 0; 3 -1 0; 0 1 -1]
+  b = FC[1; 0; 0]
+  c = FC[1; 0; 0]
+  return A, b, c
+end
+
+function small_ln(; FC=Float64)
+  A = FC[0 1]
+  b = FC[1]
+  return A, b
 end
 
 # Check that a KrylovStats is reset.

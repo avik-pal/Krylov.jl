@@ -41,7 +41,7 @@
       A, b = zero_rhs(FC=FC)
       (x, stats) = symmlq(A, b)
       @test norm(x) == 0
-      @test stats.status == "x = 0 is a zero-residual solution"
+      @test stats.status == "x is a zero-residual solution"
 
       # Test error estimate
       A = Matrix(get_div_grad(8, 8, 8))
@@ -70,14 +70,14 @@
       @test(stats.solved)
 
       # test callback function
-      solver = SymmlqSolver(A, b)
+      workspace = SymmlqWorkspace(A, b)
       tol = 1.0
       cb_n2 = TestCallbackN2(A, b, tol = tol)
-      symmlq!(solver, A, b, atol = 0.0, rtol = 0.0, callback = cb_n2)
-      @test solver.stats.status == "user-requested exit"
-      @test cb_n2(solver)
+      symmlq!(workspace, A, b, atol = 0.0, rtol = 0.0, callback = cb_n2)
+      @test workspace.stats.status == "user-requested exit"
+      @test cb_n2(workspace)
 
-      @test_throws TypeError symmlq(A, b, callback = solver -> "string", history = true)
+      @test_throws TypeError symmlq(A, b, callback = workspace -> "string", history = true)
     end
   end
 end

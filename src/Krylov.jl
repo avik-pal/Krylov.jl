@@ -1,17 +1,23 @@
 module Krylov
 
 using LinearAlgebra, SparseArrays, Printf
+import LinearAlgebra.BLAS: BlasInt, @blasfunc, libblastrampoline
 
 include("krylov_stats.jl")
 
 include("krylov_utils.jl")
-include("krylov_processes.jl")
-include("krylov_solvers.jl")
-
 include("block_krylov_utils.jl")
-include("block_krylov_processes.jl")
-include("block_krylov_solvers.jl")
 
+include("krylov_processes.jl")
+include("block_krylov_processes.jl")
+
+include("krylov_workspaces.jl")
+include("block_krylov_workspaces.jl")
+include("workspace_accessors.jl")
+
+include("krylov_show.jl")
+
+include("block_minres.jl")
 include("block_gmres.jl")
 
 include("cg.jl")
@@ -20,7 +26,6 @@ include("car.jl")
 
 include("symmlq.jl")
 include("cg_lanczos.jl")
-include("cg_lanczos_shift.jl")
 include("minres.jl")
 include("minres_qlp.jl")
 include("minares.jl")
@@ -35,6 +40,7 @@ include("gpmr.jl")
 
 include("usymlq.jl")
 include("usymqr.jl")
+include("usymlqr.jl")
 include("tricg.jl")
 include("trimr.jl")
 include("trilqr.jl")
@@ -60,5 +66,8 @@ include("lnlq.jl")
 include("craig.jl")
 include("craigmr.jl")
 
-include("krylov_solve.jl")
+include("cg_lanczos_shift.jl")
+include("cgls_lanczos_shift.jl")
+
+include("interface.jl")
 end

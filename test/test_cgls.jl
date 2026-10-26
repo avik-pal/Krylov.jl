@@ -38,7 +38,7 @@
       A, b = zero_rhs(FC=FC)
       (x, stats) = cgls(A, b)
       @test norm(x) == 0
-      @test stats.status == "x = 0 is a zero-residual solution"
+      @test stats.status == "x is a zero-residual solution"
 
       # Test dimension of additional vectors
       for transpose ∈ (false, true)
@@ -47,17 +47,26 @@
         (x, stats) = cgls(A, b, M=D⁻¹, λ=1.0)
       end
 
+      # Test different types for input and output
+      A, b, c, D = small_sp(false, FC=FC)
+      workspace = CglsWorkspace(KrylovConstructor(TestVector(b), c))
+      cgls!(workspace, A, TestVector(b), M=inv(D), λ=1.0)
+      @test typeof(workspace.x) === typeof(c)
+      workspace = CglsWorkspace(KrylovConstructor(b, TestVector(c)))
+      cgls!(workspace, A, b, M=inv(D), λ=1.0)
+      @test typeof(workspace.x) === typeof(TestVector(c))
+
       # test callback function
       A, b, M = saddle_point(FC=FC)
       M⁻¹ = inv(M)
-      solver = CglsSolver(A, b)
+      workspace = CglsWorkspace(A, b)
       tol = 1.0e-1
       cb_n2 = TestCallbackN2LS(A, b, zero(eltype(b)), tol = tol)
-      cgls!(solver, A, b, M=M⁻¹, callback = cb_n2)
-      @test solver.stats.status == "user-requested exit"
-      @test cb_n2(solver)
+      cgls!(workspace, A, b, M=M⁻¹, callback = cb_n2)
+      @test workspace.stats.status == "user-requested exit"
+      @test cb_n2(workspace)
 
-      @test_throws TypeError cgls(A, b, M=M⁻¹, callback = solver -> "string", history = true)
+      @test_throws TypeError cgls(A, b, M=M⁻¹, callback = workspace -> "string", history = true)
     end
   end
 end

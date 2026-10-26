@@ -38,7 +38,7 @@
       A, b = zero_rhs(FC=FC)
       (x, stats) = cg(A, b)
       @test norm(x) == 0
-      @test stats.status == "x = 0 is a zero-residual solution"
+      @test stats.status == "x is a zero-residual solution"
 
       # Test with Jacobi (or diagonal) preconditioner
       A, b, M = square_preconditioned(FC=FC)
@@ -48,12 +48,117 @@
       @test(resid ≤ cg_tol)
       @test(stats.solved)
 
-      # Test linesearch
-      A, b = symmetric_indefinite(FC=FC)
-      x, stats = cg(A, b, linesearch=true)
-      @test stats.status == "nonpositive curvature detected"
+      # Test line search with A indefinite; in this example, CG should stop at the first iteration
+      A, b = symmetric_indefinite(FC = FC; shift = 10)
+      solver = CgWorkspace(A, b)
+      cg!(solver,A, b, linesearch=true)
+      x, stats, npc_dir = solver.x, solver.stats, solver.npc_dir
+      @test stats.status == "nonpositive curvature"
       @test !stats.inconsistent
+      @test stats.niter == 0
+      @test stats.indefinite == true
+      @test stats.npcCount == 1
+      @test real(dot(npc_dir, A * npc_dir)) <= 0
+      @test all(npc_dir .== b)
 
+      # Test when b^TAb=0 and linesearch is true
+      A, b = zero_rhs(FC=FC)
+      solver = CgWorkspace(A, b)
+      cg!(solver, A, b, linesearch=true)
+      x, stats, npc_dir = solver.x, solver.stats, solver.npc_dir
+      @test stats.status == "x is a zero-residual solution"
+      @test norm(x) == zero(FC)
+      @test stats.niter == 0
+      
+      if FC == Float64
+        # Test radius > 0  and b^TAb=0
+        A, b = zero_rhs(FC=FC)
+        solver = CgWorkspace(A, b)
+        cg!(solver, A, b,radius = 10 * real(one(FC)))
+        x, stats, npc_dir = solver.x, solver.stats, solver.npc_dir
+        @test stats.status == "x is a zero-residual solution"
+        @test norm(x) == zero(FC)
+        @test stats.niter == 0
+
+        # Test radius > 0 and pᵀAp < 0
+        A = FC[
+          10.0 0.0 0.0 0.0;
+          0.0 8.0 0.0 0.0;
+          0.0 0.0 5.0 0.0;
+          0.0 0.0 0.0 -1.0
+        ]
+        b = FC[1.0, 1.0, 1.0, 0.1]
+        solver = CgWorkspace(A, b)
+        cg!(solver, A, b; radius = 10 * real(one(FC)))
+        x, stats, npc_dir = solver.x, solver.stats, solver.npc_dir
+        @test stats.npcCount == 1
+        @test stats.status == "nonpositive curvature"
+        @test stats.indefinite == true
+        @test real(dot(npc_dir, A * npc_dir)) <= 0.01 
+
+        # test quadratic function values are computed correctly
+        A = FC[10.0 0.0 0.0 0.0;
+          0.0 8.0 0.0 0.0;
+          0.0 0.0 5.0 0.0;
+          0.0 0.0 0.0 1.0
+        ]
+        b = FC[1.0, 1.0, 1.0, 0.1]
+        solver = CgWorkspace(A, b)
+        cg!(solver, A, b; radius = 10 * real(one(FC)), history = true)
+        x, stats, qxs = solver.x, solver.stats, solver.stats.qvals
+        @test length(qxs) == stats.niter + 1
+        @test abs(qxs[end] - (-dot(b, x) + dot(x, A * x) / 2)) ≤ 1.0e-10
+        @test abs(qxs[1]) ≤ 1.0e-10  # q(0) = 0
+        # test that q is decreasing
+        @test all(diff(qxs) .<= 1.0e-10)
+
+        # test quadratic function with trust-region
+        A = FC[
+          10.0 0.0 0.0 0.0;
+          0.0 8.0 0.0 0.0;
+          0.0 0.0 5.0 0.0;
+          0.0 0.0 0.0 -1.0
+        ]
+        b = FC[1.0, 1.0, 1.0, 0.1]
+        solver = CgWorkspace(A, b)
+        cg!(solver, A, b; radius = 0.5 * real(one(FC)), history = true)
+        x, stats, = solver.x, solver.stats
+        q = -dot(b, x) + dot(x, A * x) / 2
+        qxs = stats.qvals
+        @test abs(q - qxs[end]) ≤ 1.0e-10
+
+        # test trust region with warm start
+        A = FC[
+          10.0 0.0 0.0 0.0;
+          0.0 8.0 0.0 0.0;
+          0.0 0.0 5.0 0.0;
+          0.0 0.0 0.0 -1.0
+        ]
+        b = FC[1.0, 1.0, 1.0, 0.1]
+        x0 = FC[0.5, 0.5, 0.5, 0.05]
+        solver = CgWorkspace(A, b)
+        cg!(solver, A, b, x0; radius = 10 * real(one(FC)), history = true)
+        x, stats, = solver.x, solver.stats
+        q = -dot(b, x0) + dot(x0, A * x0) / 2
+        qxs = stats.qvals
+        @test abs(q - qxs[1]) ≤ 1.0e-10
+        r = b - A * x
+        normr = norm(r)
+        @test isapprox(normr, stats.residuals[end], atol=1.0e-10)
+
+        # test preconditioning with trust-region
+        A, b, M = square_preconditioned(FC=FC)
+        M = Diagonal(diag(M))
+        (x, stats) = cg(A, b, M=M, radius= 0.1 * real(one(FC)), history=true)
+        r = b - A * x
+        normr = sqrt(real(dot(r, M * r)))
+        @test isapprox(normr, stats.residuals[end], atol=1.0e-8)
+        @test stats.status == "on trust-region boundary"
+        q = -dot(b, x) + dot(x, A * x) / 2
+        qxs = stats.qvals
+        @test abs(q - qxs[end]) ≤ 1.0e-10
+      end
+    
       # Test singular and consistent system
       A, b = singular_consistent(FC=FC)
       x, stats = cg(A, b)
@@ -79,14 +184,55 @@
 
       # test callback function
       A, b = cartesian_poisson(FC=FC)
-      solver = CgSolver(A, b)
+      workspace = CgWorkspace(A, b)
       tol = 1.0e-1
       cb_n2 = TestCallbackN2(A, b, tol = tol)
-      cg!(solver, A, b, callback = cb_n2)
-      @test solver.stats.status == "user-requested exit"
-      @test cb_n2(solver)
+      cg!(workspace, A, b, callback = cb_n2)
+      @test workspace.stats.status == "user-requested exit"
+      @test cb_n2(workspace)
 
-      @test_throws TypeError cg(A, b, callback = solver -> "string", history = true)
+      @test_throws TypeError cg(A, b, callback = workspace -> "string", history = true)
+      
+      # Test that the cg workspace throws an error when radius > 0 and linesearch is true
+      A, b = symmetric_indefinite(FC = FC, shift = 5)
+      @test_throws ErrorException cg(A, b, radius = real(one(FC)), linesearch = true)
+      
+      # Test: Ensure stats are reset when reusing workspace
+      # (pᵀAp < 0)
+      A = FC[
+        10.0 0.0 0.0 0.0;
+        0.0 8.0 0.0 0.0;
+        0.0 0.0 5.0 0.0;
+        0.0 0.0 0.0 -1.0
+      ]
+      b = FC[1.0, 1.0, 1.0, 0.1]
+      
+      # Initialize workspace and solve
+      solver = CgWorkspace(A, b)
+      cg!(solver, A, b; linesearch=true)
+      
+      # Verify the "npc" state was recorded
+      @test solver.stats.npcCount == 1
+      @test solver.stats.indefinite == true
+      @test solver.stats.status == "nonpositive curvature"
+
+      # Reuse the SAME solver on a Positive Definite System
+
+      A = FC[
+        10.0 0.0 0.0 0.0;
+        0.0 8.0 0.0 0.0;
+        0.0 0.0 5.0 0.0;
+        0.0 0.0 0.0 1.0
+      ]
+      b = FC[1.0, 1.0, 1.0, 1.0]
+
+      # Run the solver again on the same workspace
+      cg!(solver, A, b; linesearch=true)
+      # Verify the RESET works
+      @test solver.stats.npcCount == 0
+      @test solver.stats.indefinite == false
+      @test solver.stats.solved == true
+      
     end
   end
 end

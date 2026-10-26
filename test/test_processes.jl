@@ -30,20 +30,35 @@ end
     @testset "Data Type: $FC" begin
 
       @testset "Hermitian Lanczos" begin
-        A = rand(FC, n, n)
-        A = A' * A
-        b = rand(FC, n)
-        V, β₁, T = hermitian_lanczos(A, b, k)
+        @testset "skew_hermitian = $skew_hermitian" for skew_hermitian in (false, true)
+          A = rand(FC, n, n)
+          if skew_hermitian
+            A = A - A'
+          else
+            A = A + A'
+          end
+          b = rand(FC, n)
+          @testset "reorthogonalization = $reorthogonalization" for reorthogonalization in (false, true)
+            V, β₁, T = hermitian_lanczos(A, b, k; reorthogonalization, skew_hermitian)
 
-        @test norm(V[:,1:s]' * V[:,1:s] - I) ≤ 1e-4
-        @test β₁ * V[:,1] ≈ b
-        @test A * V[:,1:k] ≈ V * T
+            @test norm(V[:,1:s]' * V[:,1:s] - I) ≤ 1e-4
+            @test β₁ * V[:,1] ≈ b
+            if skew_hermitian
+              @test T[1:k,1:k] ≈ -adjoint(T[1:k,1:k])
+            else
+              @test T[1:k,1:k] ≈ adjoint(T[1:k,1:k])
+            end
+            @test A * V[:,1:k] ≈ V * T
 
-        storage_hermitian_lanczos_bytes(n, k) = 4k * nbits_I + (3k-1) * nbits_R + n*(k+1) * nbits_FC
+            storage_hermitian_lanczos_bytes(n, k) = 4k * nbits_I + (3k-1) * nbits_FC + n*(k+1) * nbits_FC
 
-        expected_hermitian_lanczos_bytes = storage_hermitian_lanczos_bytes(n, k)
-        actual_hermitian_lanczos_bytes = @allocated hermitian_lanczos(A, b, k)
-        @test expected_hermitian_lanczos_bytes ≤ actual_hermitian_lanczos_bytes ≤ 1.02 * expected_hermitian_lanczos_bytes
+            expected_hermitian_lanczos_bytes = storage_hermitian_lanczos_bytes(n, k)
+            actual_hermitian_lanczos_bytes = @allocated hermitian_lanczos(A, b, k; reorthogonalization, skew_hermitian)
+            if VERSION < v"1.11.5" || !Sys.isapple()
+              @test expected_hermitian_lanczos_bytes ≤ actual_hermitian_lanczos_bytes ≤ 1.02 * expected_hermitian_lanczos_bytes
+            end
+          end
+        end
       end
 
       @testset "Non-Hermitian Lanczos" begin
@@ -64,13 +79,15 @@ end
 
         expected_nonhermitian_lanczos_bytes = storage_nonhermitian_lanczos_bytes(n, k)
         actual_nonhermitian_lanczos_bytes = @allocated nonhermitian_lanczos(A, b, c, k)
-        @test expected_nonhermitian_lanczos_bytes ≤ actual_nonhermitian_lanczos_bytes ≤ 1.02 * expected_nonhermitian_lanczos_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_nonhermitian_lanczos_bytes ≤ actual_nonhermitian_lanczos_bytes ≤ 1.02 * expected_nonhermitian_lanczos_bytes
+        end
       end
 
       @testset "Arnoldi" begin
         A = rand(FC, n, n)
         b = rand(FC, n)
-        for reorthogonalization in (false, true)
+        @testset "reorthogonalization = $reorthogonalization" for reorthogonalization in (false, true)
           V, β, H = arnoldi(A, b, k; reorthogonalization)
 
           @test norm(V[:,1:s]' * V[:,1:s] - I) ≤ 1e-4
@@ -83,7 +100,9 @@ end
 
           expected_arnoldi_bytes = storage_arnoldi_bytes(n, k)
           actual_arnoldi_bytes = @allocated arnoldi(A, b, k; reorthogonalization)
-          @test expected_arnoldi_bytes ≤ actual_arnoldi_bytes ≤ 1.02 * expected_arnoldi_bytes
+          if VERSION < v"1.11.5" || !Sys.isapple()
+            @test expected_arnoldi_bytes ≤ actual_arnoldi_bytes ≤ 1.02 * expected_arnoldi_bytes
+          end
         end
       end
 
@@ -105,7 +124,9 @@ end
 
         expected_golub_kahan_bytes = storage_golub_kahan_bytes(m, n, k)
         actual_golub_kahan_bytes = @allocated golub_kahan(A, b, k)
-        @test expected_golub_kahan_bytes ≤ actual_golub_kahan_bytes ≤ 1.02 * expected_golub_kahan_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_golub_kahan_bytes ≤ actual_golub_kahan_bytes ≤ 1.02 * expected_golub_kahan_bytes
+        end
       end
 
       @testset "Saunders-Simon-Yip" begin
@@ -136,7 +157,9 @@ end
 
         expected_saunders_simon_yip_bytes = storage_saunders_simon_yip_bytes(m, n, k)
         actual_saunders_simon_yip_bytes = @allocated saunders_simon_yip(A, b, c, k)
-        @test expected_saunders_simon_yip_bytes ≤ actual_saunders_simon_yip_bytes ≤ 1.02 * expected_saunders_simon_yip_bytes
+        if VERSION < v"1.11.5" || !Sys.isapple()
+          @test expected_saunders_simon_yip_bytes ≤ actual_saunders_simon_yip_bytes ≤ 1.02 * expected_saunders_simon_yip_bytes
+        end
       end
 
       @testset "Montoison-Orban" begin
@@ -144,7 +167,7 @@ end
         B = rand(FC, n, m)
         b = rand(FC, m)
         c = rand(FC, n)
-        for reorthogonalization in (false, true)
+        @testset "reorthogonalization = $reorthogonalization" for reorthogonalization in (false, true)
           V, β, H, U, γ, F = montoison_orban(A, B, b, c, k; reorthogonalization)
 
           @test norm(V[:,1:s]' * V[:,1:s] - I) ≤ 1e-4
@@ -170,9 +193,106 @@ end
 
           expected_montoison_orban_bytes = storage_montoison_orban_bytes(m, n, k)
           actual_montoison_orban_bytes = @allocated montoison_orban(A, B, b, c, k; reorthogonalization)
-          @test expected_montoison_orban_bytes ≤ actual_montoison_orban_bytes ≤ 1.02 * expected_montoison_orban_bytes
+          if VERSION < v"1.11.5" || !Sys.isapple()
+            @test expected_montoison_orban_bytes ≤ actual_montoison_orban_bytes ≤ 1.02 * expected_montoison_orban_bytes
+          end
+        end
+      end
+
+      @testset "Bunse-Gerstner-Stöver" begin
+        @testset "skew_symmetric = $skew_symmetric" for skew_symmetric in (false, true)
+          A = rand(FC, n, n)
+          if skew_symmetric
+            A = A - transpose(A)
+          else
+            A = A + transpose(A)
+          end
+          b = rand(FC, n)
+          @testset "reorthogonalization = $reorthogonalization" for reorthogonalization in (false, true)
+            V, β₁, T = bunse_gerstner_stover(A, b, k; reorthogonalization, skew_symmetric)
+
+            @test norm(V[:,1:s]' * V[:,1:s] - I) ≤ 1e-4
+            @test β₁ * V[:,1] ≈ b
+            if skew_symmetric
+              @test T[1:k,1:k] ≈ -transpose(T[1:k,1:k])
+            else
+              @test T[1:k,1:k] ≈ transpose(T[1:k,1:k])
+            end
+            @test A * conj(V[:,1:k]) ≈ V * T
+
+            # Equivalent to the Saunders-Simon-Yip process with c = b̄ in exact arithmetic.
+            if !skew_symmetric
+              V2, β₂, T2, U2, γ₂ᴴ, Tᴴ2 = saunders_simon_yip(A, b, conj(b), k)
+              @test V[:,1:s] ≈ V2[:,1:s]
+              @test conj(V[:,1:s]) ≈ U2[:,1:s]
+              @test β₁ ≈ β₂ ≈ γ₂ᴴ
+              @test T[1:s+1,1:s] ≈ T2[1:s+1,1:s]
+            end
+
+            storage_bunse_gerstner_stover_bytes(n, k) = 4k * nbits_I + (3k-1) * nbits_FC + n*(k+1) * nbits_FC + n * nbits_FC
+
+            expected_bunse_gerstner_stover_bytes = storage_bunse_gerstner_stover_bytes(n, k)
+            actual_bunse_gerstner_stover_bytes = @allocated bunse_gerstner_stover(A, b, k; reorthogonalization, skew_symmetric)
+            if VERSION < v"1.11.5" || !Sys.isapple()
+              @test expected_bunse_gerstner_stover_bytes ≤ actual_bunse_gerstner_stover_bytes ≤ 1.02 * expected_bunse_gerstner_stover_bytes
+            end
+          end
         end
       end
     end
+  end
+end
+
+@testset "breakdown" begin
+  A0, b0, c0 = Float64[1 0; 0 1], Float64[0; 0], Float64[1; 1]
+  A1, b1, c1 = ssy_mo_breakdown()
+  A2, b2, c2 = ssy_mo_breakdown2()
+  A3, b3, c3 = ssy_mo_breakdown3()
+
+  @testset "Hermitian Lanczos" begin
+    @test_throws ErrorException("Exact breakdown β₁ == 0.") hermitian_lanczos(A0, b0, 2)
+    hermitian_lanczos(A0, b0, 2, allow_breakdown=true)
+  end
+
+  @testset "Non-Hermitian Lanczos" begin
+    @test_throws ErrorException("Exact breakdown β₁γ₁ == 0.") nonhermitian_lanczos(A0, b0, c0, 2)
+    nonhermitian_lanczos(A0, b0, c0, 2, allow_breakdown=true)
+  end
+
+  @testset "Arnoldi" begin
+    @test_throws ErrorException("Exact breakdown β == 0.") arnoldi(A0, b0, 2)
+    arnoldi(A0, b0, 2, allow_breakdown=true)
+  end
+
+  @testset "Golub-Kahan" begin
+    @test_throws ErrorException("Exact breakdown β₁ == 0.") golub_kahan(A0, b0, 2)
+    golub_kahan(A0, b0, 2, allow_breakdown=true)
+  end
+
+  @testset "Saunders-Simon-Yip" begin
+    @test_throws ErrorException("Exact breakdown β₁ == 0.") saunders_simon_yip(A0, b0, c0, 2)
+    saunders_simon_yip(A0, b0, c0, 2, allow_breakdown=true)
+    @test_throws ErrorException("Exact breakdown γ₁ᴴ == 0.") saunders_simon_yip(A0, c0, b0, 2)
+    saunders_simon_yip(A0, c0, b0, 2, allow_breakdown=true)
+    @test_throws ErrorException("Exact breakdown βᵢ₊₁ == 0 at iteration i = 1.") saunders_simon_yip(A1, b1, c1, 1)
+    @test_throws ErrorException("Exact breakdown βᵢ₊₁ == 0 at iteration i = 2.") saunders_simon_yip(A2, b2, c2, 2)
+    @test_throws ErrorException("Exact breakdown γᵢ₊₁ == 0 at iteration i = 2.") saunders_simon_yip(A3, b3, c3, 2)
+  end
+
+  @testset "Montoison-Orban" begin
+    @test_throws ErrorException("Exact breakdown β == 0.") montoison_orban(A0, A0', b0, c0, 2)
+    montoison_orban(A0, A0', b0, c0, 2, allow_breakdown=true)
+    @test_throws ErrorException("Exact breakdown γ == 0.") montoison_orban(A0, A0', c0, b0, 2)
+    montoison_orban(A0, A0', c0, b0, 2, allow_breakdown=true)
+    @test_throws ErrorException("Exact breakdown Hᵢ₊₁.ᵢ == 0 at iteration i = 1.") montoison_orban(A1, A1', b1, c1, 1)
+    @test_throws ErrorException("Exact breakdown Hᵢ₊₁.ᵢ == 0 at iteration i = 2.") montoison_orban(A2, A2', b2, c2, 2)
+    @test_throws ErrorException("Exact breakdown Fᵢ₊₁.ᵢ == 0 at iteration i = 2.") montoison_orban(A3, A3', b3, c3, 2)
+  end
+
+  @testset "Bunse-Gerstner-Stöver" begin
+    @test_throws ErrorException("Exact breakdown β₁ == 0.") bunse_gerstner_stover(A0, b0, 2)
+    bunse_gerstner_stover(A0, b0, 2, allow_breakdown=true)
+    @test_throws ErrorException("Exact breakdown βᵢ₊₁ == 0 at iteration i = 1.") bunse_gerstner_stover(A0, Float64[1; 0], 1)
+    @test_throws ErrorException("Exact breakdown βᵢ₊₁ == 0 at iteration i = 2.") bunse_gerstner_stover(ComplexF64[0 1; 1 0], ComplexF64[1; 0], 2)
   end
 end

@@ -19,7 +19,7 @@ export trimr, trimr!
                           τ::T=one(T), ν::T=-one(T), atol::T=√eps(T),
                           rtol::T=√eps(T), itmax::Int=0,
                           timemax::Float64=Inf, verbose::Int=0, history::Bool=false,
-                          callback=solver->false, iostream::IO=kstdout)
+                          callback=workspace->false, iostream::IO=kstdout)
 
 `T` is an `AbstractFloat` such as `Float32`, `Float64` or `BigFloat`.
 `FC` is `T` or `Complex{T}`.
@@ -33,34 +33,45 @@ Given a matrix `A` of dimension m × n, TriMR solves the symmetric linear system
     [ τE    A ] [ x ] = [ b ]
     [  Aᴴ  νF ] [ y ]   [ c ],
 
-of size (n+m) × (n+m) where τ and ν are real numbers, E = M⁻¹ ≻ 0, F = N⁻¹ ≻ 0.
-`b` and `c` must both be nonzero.
+of size (n+m) × (n+m) where `τ` and `ν` are real numbers, `E` = `M⁻¹` ≻ 0, `F` = `N⁻¹` ≻ 0.
 TriMR handles saddle-point systems (`τ = 0` or `ν = 0`) and adjoint systems (`τ = 0` and `ν = 0`) without any risk of breakdown.
 
-By default, TriMR solves symmetric and quasi-definite linear systems with τ = 1 and ν = -1.
+With `τ = 0` or `ν = 0`, `b` and `c` must both be nonzero. A zero right-hand side breaks the orthogonal tridiagonalization down and the iterates are `NaN`. For those systems, use a least-squares solver ([`lslq`](@ref), [`lsqr`](@ref), [`lsmr`](@ref)) if `c` is zero, and a least-norm solver ([`lnlq`](@ref), [`craig`](@ref), [`craigmr`](@ref)) if `b` is zero.
+
+By default, TriMR solves symmetric and quasi-definite linear systems with `τ` = 1 and `ν` = -1.
 
 TriMR is based on the preconditioned orthogonal tridiagonalization process
 and its relation with the preconditioned block-Lanczos process.
 
+The matrix
+
     [ M   0 ]
     [ 0   N ]
 
-indicates the weighted norm in which residuals are measured.
+indicates the weighted norm in which residuals are measured, here denoted `‖·‖`.
 It's the Euclidean norm when `M` and `N` are identity operators.
 
 TriMR stops when `itmax` iterations are reached or when `‖rₖ‖ ≤ atol + ‖r₀‖ * rtol`.
 `atol` is an absolute tolerance and `rtol` is a relative tolerance.
 
+#### Interface
+
+To easily switch between Krylov methods, use the generic interface [`krylov_solve`](@ref) with `method = :trimr`.
+
+For an in-place variant that reuses memory across solves, see [`trimr!`](@ref).
+
 #### Input arguments
 
-* `A`: a linear operator that models a matrix of dimension m × n;
-* `b`: a vector of length m;
-* `c`: a vector of length n.
+* `A`: a linear operator that models a matrix of dimension `m × n`;
+* `b`: a vector of length `m`, nonzero if `τ = 0` or `ν = 0`;
+* `c`: a vector of length `n`, nonzero if `τ = 0` or `ν = 0`.
 
 #### Optional arguments
 
-* `x0`: a vector of length m that represents an initial guess of the solution x;
-* `y0`: a vector of length n that represents an initial guess of the solution y.
+* `x0`: a vector of length `m` that represents an initial guess of the solution `x`;
+* `y0`: a vector of length `n` that represents an initial guess of the solution `y`.
+
+Warm-starting is supported only when `M` and `N` are either `I` or the corresponding coefficient (`τ` or `ν`) is zero.
 
 #### Keyword arguments
 
@@ -78,13 +89,13 @@ TriMR stops when `itmax` iterations are reached or when `‖rₖ‖ ≤ atol + �
 * `timemax`: the time limit in seconds;
 * `verbose`: additional details can be displayed if verbose mode is enabled (verbose > 0). Information will be displayed every `verbose` iterations;
 * `history`: collect additional statistics on the run such as residual norms, or Aᴴ-residual norms;
-* `callback`: function or functor called as `callback(solver)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
+* `callback`: function or functor called as `callback(workspace)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
 * `iostream`: stream to which output is logged.
 
 #### Output arguments
 
-* `x`: a dense vector of length m;
-* `y`: a dense vector of length n;
+* `x`: a dense vector of length `m`;
+* `y`: a dense vector of length `n`;
 * `stats`: statistics collected on the run in a [`SimpleStats`](@ref) structure.
 
 #### Reference
@@ -94,12 +105,15 @@ TriMR stops when `itmax` iterations are reached or when `‖rₖ‖ ≤ atol + �
 function trimr end
 
 """
-    solver = trimr!(solver::TrimrSolver, A, b, c; kwargs...)
-    solver = trimr!(solver::TrimrSolver, A, b, c, x0, y0; kwargs...)
+    workspace = trimr!(workspace::TrimrWorkspace, A, b, c; kwargs...)
+    workspace = trimr!(workspace::TrimrWorkspace, A, b, c, x0, y0; kwargs...)
 
-where `kwargs` are keyword arguments of [`trimr`](@ref).
+In these calls, `kwargs` are keyword arguments of [`trimr`](@ref).
 
-See [`TrimrSolver`](@ref) for more details about the `solver`.
+See [`TrimrWorkspace`](@ref) for instructions on how to create the `workspace`.
+
+For a more generic interface, you can use [`krylov_workspace`](@ref) with `method = :trimr` to allocate the workspace,
+and [`krylov_solve!`](@ref) to run the Krylov method in-place.
 """
 function trimr! end
 
@@ -110,60 +124,39 @@ def_args_trimr = (:(A                    ),
 def_optargs_trimr = (:(x0::AbstractVector),
                      :(y0::AbstractVector))
 
-def_kwargs_trimr = (:(; M = I                     ),
-                    :(; N = I                     ),
-                    :(; ldiv::Bool = false        ),
-                    :(; spd::Bool = false         ),
-                    :(; snd::Bool = false         ),
-                    :(; flip::Bool = false        ),
-                    :(; sp::Bool = false          ),
-                    :(; τ::T = one(T)             ),
-                    :(; ν::T = -one(T)            ),
-                    :(; atol::T = √eps(T)         ),
-                    :(; rtol::T = √eps(T)         ),
-                    :(; itmax::Int = 0            ),
-                    :(; timemax::Float64 = Inf    ),
-                    :(; verbose::Int = 0          ),
-                    :(; history::Bool = false     ),
-                    :(; callback = solver -> false),
-                    :(; iostream::IO = kstdout    ))
+def_kwargs_trimr = (:(; M = I                        ),
+                    :(; N = I                        ),
+                    :(; ldiv::Bool = false           ),
+                    :(; spd::Bool = false            ),
+                    :(; snd::Bool = false            ),
+                    :(; flip::Bool = false           ),
+                    :(; sp::Bool = false             ),
+                    :(; τ::T = one(T)                ),
+                    :(; ν::T = -one(T)               ),
+                    :(; atol::T = √eps(T)            ),
+                    :(; rtol::T = √eps(T)            ),
+                    :(; itmax::Int = 0               ),
+                    :(; timemax::Float64 = Inf       ),
+                    :(; verbose::Int = 0             ),
+                    :(; history::Bool = false        ),
+                    :(; callback = workspace -> false),
+                    :(; iostream::IO = kstdout       ))
 
-def_kwargs_trimr = mapreduce(extract_parameters, vcat, def_kwargs_trimr)
+def_kwargs_trimr = extract_parameters.(def_kwargs_trimr)
 
 args_trimr = (:A, :b, :c)
 optargs_trimr = (:x0, :y0)
 kwargs_trimr = (:M, :N, :ldiv, :spd, :snd, :flip, :sp, :τ, :ν, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback, :iostream)
 
 @eval begin
-  function trimr($(def_args_trimr...), $(def_optargs_trimr...); $(def_kwargs_trimr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = TrimrSolver(A, b)
-    warm_start!(solver, $(optargs_trimr...))
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    trimr!(solver, $(args_trimr...); $(kwargs_trimr...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.y, solver.stats)
-  end
-
-  function trimr($(def_args_trimr...); $(def_kwargs_trimr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = TrimrSolver(A, b)
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    trimr!(solver, $(args_trimr...); $(kwargs_trimr...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.y, solver.stats)
-  end
-
-  function trimr!(solver :: TrimrSolver{T,FC,S}, $(def_args_trimr...); $(def_kwargs_trimr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
+  function trimr!(workspace :: TrimrWorkspace{T,FC,Sm,Sn}, $(def_args_trimr...); $(def_kwargs_trimr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, Sm <: AbstractVector{FC}, Sn <: AbstractVector{FC}}
 
     # Timer
     start_time = time_ns()
     timemax_ns = 1e9 * timemax
 
     m, n = size(A)
-    (m == solver.m && n == solver.n) || error("(solver.m, solver.n) = ($(solver.m), $(solver.n)) is inconsistent with size(A) = ($m, $n)")
+    (m == workspace.m && n == workspace.n) || error("(workspace.m, workspace.n) = ($(workspace.m), $(workspace.n)) is inconsistent with size(A) = ($m, $n)")
     length(b) == m || error("Inconsistent problem size")
     length(c) == n || error("Inconsistent problem size")
     (verbose > 0) && @printf(iostream, "TriMR: system of %d equations in %d variables\n", m+n, m+n)
@@ -182,8 +175,8 @@ kwargs_trimr = (:M, :N, :ldiv, :spd, :snd, :flip, :sp, :τ, :ν, :atol, :rtol, :
 
     # Check type consistency
     eltype(A) == FC || @warn "eltype(A) ≠ $FC. This could lead to errors or additional allocations in operator-vector products."
-    ktypeof(b) <: S || error("ktypeof(b) is not a subtype of $S")
-    ktypeof(c) <: S || error("ktypeof(c) is not a subtype of $S")
+    ktypeof(b) == Sm || error("ktypeof(b) must be equal to $Sm")
+    ktypeof(c) == Sn || error("ktypeof(c) must be equal to $Sn")
 
     # Determine τ and ν associated to SQD, SPD or SND systems.
     flip && (τ = -one(T) ; ν =  one(T))
@@ -191,7 +184,7 @@ kwargs_trimr = (:M, :N, :ldiv, :spd, :snd, :flip, :sp, :τ, :ν, :atol, :rtol, :
     snd  && (τ = -one(T) ; ν = -one(T))
     sp   && (τ =  one(T) ; ν = zero(T))
 
-    warm_start = solver.warm_start
+    warm_start = workspace.warm_start
     warm_start && (τ ≠ 0) && !MisI && error("Warm-start with preconditioners is not supported.")
     warm_start && (ν ≠ 0) && !NisI && error("Warm-start with preconditioners is not supported.")
 
@@ -199,76 +192,80 @@ kwargs_trimr = (:M, :N, :ldiv, :spd, :snd, :flip, :sp, :τ, :ν, :atol, :rtol, :
     Aᴴ = A'
 
     # Set up workspace.
-    allocate_if(!MisI, solver, :vₖ, S, m)
-    allocate_if(!NisI, solver, :uₖ, S, n)
-    Δy, yₖ, N⁻¹uₖ₋₁, N⁻¹uₖ, p = solver.Δy, solver.y, solver.N⁻¹uₖ₋₁, solver.N⁻¹uₖ, solver.p
-    Δx, xₖ, M⁻¹vₖ₋₁, M⁻¹vₖ, q = solver.Δx, solver.x, solver.M⁻¹vₖ₋₁, solver.M⁻¹vₖ, solver.q
-    gy₂ₖ₋₃, gy₂ₖ₋₂, gy₂ₖ₋₁, gy₂ₖ = solver.gy₂ₖ₋₃, solver.gy₂ₖ₋₂, solver.gy₂ₖ₋₁, solver.gy₂ₖ
-    gx₂ₖ₋₃, gx₂ₖ₋₂, gx₂ₖ₋₁, gx₂ₖ = solver.gx₂ₖ₋₃, solver.gx₂ₖ₋₂, solver.gx₂ₖ₋₁, solver.gx₂ₖ
-    vₖ = MisI ? M⁻¹vₖ : solver.vₖ
-    uₖ = NisI ? N⁻¹uₖ : solver.uₖ
+    allocate_if(!MisI, workspace, :vₖ, Sm, workspace.x)  # The length of vₖ is m
+    allocate_if(!NisI, workspace, :uₖ, Sn, workspace.y)  # The length of uₖ is n
+    Δy, yₖ, N⁻¹uₖ₋₁, N⁻¹uₖ, p = workspace.Δy, workspace.y, workspace.N⁻¹uₖ₋₁, workspace.N⁻¹uₖ, workspace.p
+    Δx, xₖ, M⁻¹vₖ₋₁, M⁻¹vₖ, q = workspace.Δx, workspace.x, workspace.M⁻¹vₖ₋₁, workspace.M⁻¹vₖ, workspace.q
+    gy₂ₖ₋₃, gy₂ₖ₋₂, gy₂ₖ₋₁, gy₂ₖ = workspace.gy₂ₖ₋₃, workspace.gy₂ₖ₋₂, workspace.gy₂ₖ₋₁, workspace.gy₂ₖ
+    gx₂ₖ₋₃, gx₂ₖ₋₂, gx₂ₖ₋₁, gx₂ₖ = workspace.gx₂ₖ₋₃, workspace.gx₂ₖ₋₂, workspace.gx₂ₖ₋₁, workspace.gx₂ₖ
+    vₖ = MisI ? M⁻¹vₖ : workspace.vₖ
+    uₖ = NisI ? N⁻¹uₖ : workspace.uₖ
     vₖ₊₁ = MisI ? q : M⁻¹vₖ₋₁
     uₖ₊₁ = NisI ? p : N⁻¹uₖ₋₁
     b₀ = warm_start ? q : b
     c₀ = warm_start ? p : c
 
-    stats = solver.stats
+    stats = workspace.stats
     rNorms = stats.residuals
     reset!(stats)
 
     # Initial solutions x₀ and y₀.
-    xₖ .= zero(FC)
-    yₖ .= zero(FC)
+    kfill!(xₖ, zero(FC))
+    kfill!(yₖ, zero(FC))
 
     iter = 0
     itmax == 0 && (itmax = m+n)
 
     # Initialize preconditioned orthogonal tridiagonalization process.
-    M⁻¹vₖ₋₁ .= zero(FC)  # v₀ = 0
-    N⁻¹uₖ₋₁ .= zero(FC)  # u₀ = 0
+    kfill!(M⁻¹vₖ₋₁, zero(FC))  # v₀ = 0
+    kfill!(N⁻¹uₖ₋₁, zero(FC))  # u₀ = 0
 
     # [ τI    A ] [ xₖ ] = [ b -  τΔx - AΔy ] = [ b₀ ]
     # [  Aᴴ  νI ] [ yₖ ]   [ c - AᴴΔx - νΔy ]   [ c₀ ]
     if warm_start
-      mul!(b₀, A, Δy)
-      (τ ≠ 0) && @kaxpy!(m, τ, Δx, b₀)
-      @kaxpby!(m, one(FC), b, -one(FC), b₀)
-      mul!(c₀, Aᴴ, Δx)
-      (ν ≠ 0) && @kaxpy!(n, ν, Δy, c₀)
-      @kaxpby!(n, one(FC), c, -one(FC), c₀)
+      kmul!(b₀, A, Δy)
+      (τ ≠ 0) && kaxpy!(m, τ, Δx, b₀)
+      kaxpby!(m, one(FC), b, -one(FC), b₀)
+      kmul!(c₀, Aᴴ, Δx)
+      (ν ≠ 0) && kaxpy!(n, ν, Δy, c₀)
+      kaxpby!(n, one(FC), c, -one(FC), c₀)
     end
 
     # β₁Ev₁ = b ↔ β₁v₁ = Mb
-    M⁻¹vₖ .= b₀
+    kcopy!(m, M⁻¹vₖ, b₀)  # M⁻¹vₖ ← b₀
     MisI || mulorldiv!(vₖ, M, M⁻¹vₖ, ldiv)
-    βₖ = sqrt(@kdotr(m, vₖ, M⁻¹vₖ))  # β₁ = ‖v₁‖_E
+    βₖ = knorm_elliptic(m, vₖ, M⁻¹vₖ)  # β₁ = ‖v₁‖_E
     if βₖ ≠ 0
-      @kscal!(m, one(FC) / βₖ, M⁻¹vₖ)
-      MisI || @kscal!(m, one(FC) / βₖ, vₖ)
+      kdiv!(m, M⁻¹vₖ, βₖ)
+      MisI || kdiv!(m, vₖ, βₖ)
     else
-      error("b must be nonzero")
+      # v₁ = 0 such that v₁ ⊥ Span{v₁, ..., vₖ}
+      kfill!(M⁻¹vₖ, zero(FC))
+      MisI || kfill!(vₖ, zero(FC))
     end
 
     # γ₁Fu₁ = c ↔ γ₁u₁ = Nc
-    N⁻¹uₖ .= c₀
+    kcopy!(n, N⁻¹uₖ, c₀)  # N⁻¹uₖ ← c₀
     NisI || mulorldiv!(uₖ, N, N⁻¹uₖ, ldiv)
-    γₖ = sqrt(@kdotr(n, uₖ, N⁻¹uₖ))  # γ₁ = ‖u₁‖_F
+    γₖ = knorm_elliptic(n, uₖ, N⁻¹uₖ)  # γ₁ = ‖u₁‖_F
     if γₖ ≠ 0
-      @kscal!(n, one(FC) / γₖ, N⁻¹uₖ)
-      NisI || @kscal!(n, one(FC) / γₖ, uₖ)
+      # u₁ = 0 such that u₁ ⊥ Span{u₁, ..., uₖ}
+      kdiv!(n, N⁻¹uₖ, γₖ)
+      NisI || kdiv!(n, uₖ, γₖ)
     else
-      error("c must be nonzero")
+      kfill!(N⁻¹uₖ, zero(FC))
+      NisI || kfill!(uₖ, zero(FC))
     end
 
     # Initialize directions Gₖ such that (GₖRₖ)ᵀ = (Wₖ)ᵀ.
-    gx₂ₖ₋₃ .= zero(FC)
-    gy₂ₖ₋₃ .= zero(FC)
-    gx₂ₖ₋₂ .= zero(FC)
-    gy₂ₖ₋₂ .= zero(FC)
-    gx₂ₖ₋₁ .= zero(FC)
-    gy₂ₖ₋₁ .= zero(FC)
-    gx₂ₖ   .= zero(FC)
-    gy₂ₖ   .= zero(FC)
+    kfill!(gx₂ₖ₋₃, zero(FC))
+    kfill!(gy₂ₖ₋₃, zero(FC))
+    kfill!(gx₂ₖ₋₂, zero(FC))
+    kfill!(gy₂ₖ₋₂, zero(FC))
+    kfill!(gx₂ₖ₋₁, zero(FC))
+    kfill!(gy₂ₖ₋₁, zero(FC))
+    kfill!(gx₂ₖ  , zero(FC))
+    kfill!(gy₂ₖ  , zero(FC))
 
     # Compute ‖r₀‖² = (γ₁)² + (β₁)²
     rNorm = sqrt(γₖ^2 + βₖ^2)
@@ -276,7 +273,7 @@ kwargs_trimr = (:M, :N, :ldiv, :spd, :snd, :flip, :sp, :τ, :ν, :atol, :rtol, :
     ε = atol + rtol * rNorm
 
     (verbose > 0) && @printf(iostream, "%5s  %7s  %7s  %7s  %5s\n", "k", "‖rₖ‖", "βₖ₊₁", "γₖ₊₁", "timer")
-    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %.2fs\n", iter, rNorm, βₖ, γₖ, ktimer(start_time))
+    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %.2fs\n", iter, rNorm, βₖ, γₖ, start_time |> ktimer)
 
     # Set up workspace.
     old_c₁ₖ = old_c₂ₖ = old_c₃ₖ = old_c₄ₖ = zero(T)
@@ -286,7 +283,7 @@ kwargs_trimr = (:M, :N, :ldiv, :spd, :snd, :flip, :sp, :τ, :ν, :atol, :rtol, :
     πbar₂ₖ = γₖ
 
     # Tolerance for breakdown detection.
-    btol = eps(T)^(3/4)
+    btol = eps(T)^(3//4)
 
     # Stopping criterion.
     breakdown = false
@@ -306,37 +303,41 @@ kwargs_trimr = (:M, :N, :ldiv, :spd, :snd, :flip, :sp, :τ, :ν, :atol, :rtol, :
       # AUₖ  = EVₖTₖ    + βₖ₊₁Evₖ₊₁(eₖ)ᵀ = EVₖ₊₁Tₖ₊₁.ₖ
       # AᴴVₖ = FUₖ(Tₖ)ᴴ + γₖ₊₁Fuₖ₊₁(eₖ)ᵀ = FUₖ₊₁(Tₖ.ₖ₊₁)ᴴ
 
-      mul!(q, A , uₖ)  # Forms Evₖ₊₁ : q ← Auₖ
-      mul!(p, Aᴴ, vₖ)  # Forms Fuₖ₊₁ : p ← Aᴴvₖ
+      kmul!(q, A , uₖ)  # Forms Evₖ₊₁ : q ← Auₖ
+      kmul!(p, Aᴴ, vₖ)  # Forms Fuₖ₊₁ : p ← Aᴴvₖ
 
       if iter ≥ 2
-        @kaxpy!(m, -γₖ, M⁻¹vₖ₋₁, q)  # q ← q - γₖ * M⁻¹vₖ₋₁
-        @kaxpy!(n, -βₖ, N⁻¹uₖ₋₁, p)  # p ← p - βₖ * N⁻¹uₖ₋₁
+        kaxpy!(m, -γₖ, M⁻¹vₖ₋₁, q)  # q ← q - γₖ * M⁻¹vₖ₋₁
+        kaxpy!(n, -βₖ, N⁻¹uₖ₋₁, p)  # p ← p - βₖ * N⁻¹uₖ₋₁
       end
 
-      αₖ = @kdot(m, vₖ, q)  # αₖ = ⟨vₖ,q⟩
+      αₖ = kdot(m, vₖ, q)  # αₖ = ⟨vₖ,q⟩
 
-      @kaxpy!(m, -     αₖ , M⁻¹vₖ, q)  # q ← q - αₖ * M⁻¹vₖ
-      @kaxpy!(n, -conj(αₖ), N⁻¹uₖ, p)  # p ← p - ᾱₖ * N⁻¹uₖ
+      kaxpy!(m, -     αₖ , M⁻¹vₖ, q)  # q ← q - αₖ * M⁻¹vₖ
+      kaxpy!(n, -conj(αₖ), N⁻¹uₖ, p)  # p ← p - ᾱₖ * N⁻¹uₖ
 
       # Compute vₖ₊₁ and uₖ₊₁
       MisI || mulorldiv!(vₖ₊₁, M, q, ldiv)  # βₖ₊₁vₖ₊₁ = MAuₖ  - γₖvₖ₋₁ - αₖvₖ
       NisI || mulorldiv!(uₖ₊₁, N, p, ldiv)  # γₖ₊₁uₖ₊₁ = NAᴴvₖ - βₖuₖ₋₁ - ᾱₖuₖ
 
-      βₖ₊₁ = sqrt(@kdotr(m, vₖ₊₁, q))  # βₖ₊₁ = ‖vₖ₊₁‖_E
-      γₖ₊₁ = sqrt(@kdotr(n, uₖ₊₁, p))  # γₖ₊₁ = ‖uₖ₊₁‖_F
+      βₖ₊₁ = knorm_elliptic(m, vₖ₊₁, q)  # βₖ₊₁ = ‖vₖ₊₁‖_E
+      γₖ₊₁ = knorm_elliptic(n, uₖ₊₁, p)  # γₖ₊₁ = ‖uₖ₊₁‖_F
 
       # βₖ₊₁ ≠ 0
       if βₖ₊₁ > btol
-        @kscal!(m, one(FC) / βₖ₊₁, q)
-        MisI || @kscal!(m, one(FC) / βₖ₊₁, vₖ₊₁)
+        kdiv!(m, q, βₖ₊₁)
+        MisI || kdiv!(m, vₖ₊₁, βₖ₊₁)
       end
+      # Note that if βₖ₊₁ == 0 then vₖ₊₁ = 0 and Auₖ ∈ Span{v₁, ..., vₖ}
+      # We can keep vₖ₊₁ = 0 such that vₖ₊₁ ⊥ Span{v₁, ..., vₖ}
 
       # γₖ₊₁ ≠ 0
       if γₖ₊₁ > btol
-        @kscal!(n, one(FC) / γₖ₊₁, p)
-        NisI || @kscal!(n, one(FC) / γₖ₊₁, uₖ₊₁)
+        kdiv!(n, p, γₖ₊₁)
+        NisI || kdiv!(n, uₖ₊₁, γₖ₊₁)
       end
+      # Note that if γₖ₊₁ == 0 then uₖ₊₁ = 0 and Aᴴvₖ ∈ Span{u₁, ..., uₖ}
+      # We can keep uₖ₊₁ = 0 such that uₖ₊₁ ⊥ Span{u₁, ..., uₖ}
 
       # Notations : Wₖ = [w₁ ••• wₖ] = [v₁ 0  ••• vₖ 0 ]
       #                                [0  u₁ ••• 0  uₖ]
@@ -447,36 +448,36 @@ kwargs_trimr = (:M, :N, :ldiv, :spd, :snd, :flip, :sp, :τ, :ν, :atol, :rtol, :
       if iter == 1
         # [ δ₁  0  ] [ gx₁ gy₁ ] = [ v₁ 0  ]
         # [ σ₁  δ₂ ] [ gx₂ gy₂ ]   [ 0  u₁ ]
-        @. gx₂ₖ₋₁ = vₖ / δ₂ₖ₋₁
-        @. gx₂ₖ   = - σ₂ₖ₋₁ / δ₂ₖ * gx₂ₖ₋₁
-        @. gy₂ₖ   = uₖ / δ₂ₖ
+        kdivcopy!(m, gx₂ₖ₋₁, vₖ, δ₂ₖ₋₁)
+        kscalcopy!(m, gx₂ₖ, -σ₂ₖ₋₁ / δ₂ₖ, gx₂ₖ₋₁)
+        kdivcopy!(n, gy₂ₖ, uₖ, δ₂ₖ)
       elseif iter == 2
         # [ η₁ σ₂ δ₃ 0  ] [ gx₁ gy₁ ] = [ v₂ 0  ]
         # [ λ₁ η₂ σ₃ δ₄ ] [ gx₂ gy₂ ]   [ 0  u₂ ]
         #                 [ gx₃ gy₃ ]
         #                 [ gx₄ gy₄ ]
-        @kswap(gx₂ₖ₋₃, gx₂ₖ₋₁)
-        @kswap(gx₂ₖ₋₂, gx₂ₖ)
-        @kswap(gy₂ₖ₋₂, gy₂ₖ)
-        @. gx₂ₖ₋₁ = (vₖ - η₂ₖ₋₃ * gx₂ₖ₋₃ - σ₂ₖ₋₂ * gx₂ₖ₋₂                 ) / δ₂ₖ₋₁
-        @. gx₂ₖ   = (   - λ₂ₖ₋₃ * gx₂ₖ₋₃ - η₂ₖ₋₂ * gx₂ₖ₋₂ - σ₂ₖ₋₁ * gx₂ₖ₋₁) / δ₂ₖ
-        @. gy₂ₖ₋₁ = (   - η₂ₖ₋₃ * gy₂ₖ₋₃ - σ₂ₖ₋₂ * gy₂ₖ₋₂                 ) / δ₂ₖ₋₁
-        @. gy₂ₖ   = (uₖ - λ₂ₖ₋₃ * gy₂ₖ₋₃ - η₂ₖ₋₂ * gy₂ₖ₋₂ - σ₂ₖ₋₁ * gy₂ₖ₋₁) / δ₂ₖ
+        @kswap!(gx₂ₖ₋₃, gx₂ₖ₋₁)
+        @kswap!(gx₂ₖ₋₂, gx₂ₖ)
+        @kswap!(gy₂ₖ₋₂, gy₂ₖ)
+        gx₂ₖ₋₁ .= (vₖ .- η₂ₖ₋₃ .* gx₂ₖ₋₃ .- σ₂ₖ₋₂ .* gx₂ₖ₋₂                   ) ./ δ₂ₖ₋₁
+        gx₂ₖ   .= (   .- λ₂ₖ₋₃ .* gx₂ₖ₋₃ .- η₂ₖ₋₂ .* gx₂ₖ₋₂ .- σ₂ₖ₋₁ .* gx₂ₖ₋₁) ./ δ₂ₖ
+        gy₂ₖ₋₁ .= (   .- η₂ₖ₋₃ .* gy₂ₖ₋₃ .- σ₂ₖ₋₂ .* gy₂ₖ₋₂                   ) ./ δ₂ₖ₋₁
+        gy₂ₖ   .= (uₖ .- λ₂ₖ₋₃ .* gy₂ₖ₋₃ .- η₂ₖ₋₂ .* gy₂ₖ₋₂ .- σ₂ₖ₋₁ .* gy₂ₖ₋₁) ./ δ₂ₖ
       else
         # μ₂ₖ₋₅ * gx₂ₖ₋₅ + λ₂ₖ₋₄ * gx₂ₖ₋₄ + η₂ₖ₋₃ * gx₂ₖ₋₃ + σ₂ₖ₋₂ * gx₂ₖ₋₂ + δ₂ₖ₋₁ * gx₂ₖ₋₁              = vₖ
         #                  μ₂ₖ₋₄ * gx₂ₖ₋₄ + λ₂ₖ₋₃ * gx₂ₖ₋₃ + η₂ₖ₋₂ * gx₂ₖ₋₂ + σ₂ₖ₋₁ * gx₂ₖ₋₁ + δ₂ₖ * gx₂ₖ = 0
         g₂ₖ₋₁ = g₂ₖ₋₅ = gx₂ₖ₋₃; g₂ₖ = g₂ₖ₋₄ = gx₂ₖ₋₂; g₂ₖ₋₃ = gx₂ₖ₋₁; g₂ₖ₋₂ = gx₂ₖ
-        @. g₂ₖ₋₁ = (vₖ - μ₂ₖ₋₅ * g₂ₖ₋₅ - λ₂ₖ₋₄ * g₂ₖ₋₄ - η₂ₖ₋₃ * g₂ₖ₋₃ - σ₂ₖ₋₂ * g₂ₖ₋₂                ) / δ₂ₖ₋₁
-        @. g₂ₖ   = (                   - μ₂ₖ₋₄ * g₂ₖ₋₄ - λ₂ₖ₋₃ * g₂ₖ₋₃ - η₂ₖ₋₂ * g₂ₖ₋₂ - σ₂ₖ₋₁ * g₂ₖ₋₁) / δ₂ₖ
-        @kswap(gx₂ₖ₋₃, gx₂ₖ₋₁)
-        @kswap(gx₂ₖ₋₂, gx₂ₖ)
+        g₂ₖ₋₁ .= (vₖ .- μ₂ₖ₋₅ .* g₂ₖ₋₅ .- λ₂ₖ₋₄ .* g₂ₖ₋₄ .- η₂ₖ₋₃ .* g₂ₖ₋₃ .- σ₂ₖ₋₂ .* g₂ₖ₋₂                  ) ./ δ₂ₖ₋₁
+        g₂ₖ   .= (                     .- μ₂ₖ₋₄ .* g₂ₖ₋₄ .- λ₂ₖ₋₃ .* g₂ₖ₋₃ .- η₂ₖ₋₂ .* g₂ₖ₋₂ .- σ₂ₖ₋₁ .* g₂ₖ₋₁) ./ δ₂ₖ
+        @kswap!(gx₂ₖ₋₃, gx₂ₖ₋₁)
+        @kswap!(gx₂ₖ₋₂, gx₂ₖ)
         # μ₂ₖ₋₅ * gy₂ₖ₋₅ + λ₂ₖ₋₄ * gy₂ₖ₋₄ + η₂ₖ₋₃ * gy₂ₖ₋₃ + σ₂ₖ₋₂ * gy₂ₖ₋₂ + δ₂ₖ₋₁ * gy₂ₖ₋₁              = 0
         #                  μ₂ₖ₋₄ * gy₂ₖ₋₄ + λ₂ₖ₋₃ * gy₂ₖ₋₃ + η₂ₖ₋₂ * gy₂ₖ₋₂ + σ₂ₖ₋₁ * gy₂ₖ₋₁ + δ₂ₖ * gy₂ₖ = uₖ
         g₂ₖ₋₁ = g₂ₖ₋₅ = gy₂ₖ₋₃; g₂ₖ = g₂ₖ₋₄ = gy₂ₖ₋₂; g₂ₖ₋₃ = gy₂ₖ₋₁; g₂ₖ₋₂ = gy₂ₖ
-        @. g₂ₖ₋₁ = (     - μ₂ₖ₋₅ * g₂ₖ₋₅ - λ₂ₖ₋₄ * g₂ₖ₋₄ - η₂ₖ₋₃ * g₂ₖ₋₃ - σ₂ₖ₋₂ * g₂ₖ₋₂                ) / δ₂ₖ₋₁
-        @. g₂ₖ   = (uₖ                   - μ₂ₖ₋₄ * g₂ₖ₋₄ - λ₂ₖ₋₃ * g₂ₖ₋₃ - η₂ₖ₋₂ * g₂ₖ₋₂ - σ₂ₖ₋₁ * g₂ₖ₋₁) / δ₂ₖ
-        @kswap(gy₂ₖ₋₃, gy₂ₖ₋₁)
-        @kswap(gy₂ₖ₋₂, gy₂ₖ)
+        g₂ₖ₋₁ .= (     .- μ₂ₖ₋₅ .* g₂ₖ₋₅ .- λ₂ₖ₋₄ .* g₂ₖ₋₄ .- η₂ₖ₋₃ .* g₂ₖ₋₃ .- σ₂ₖ₋₂ .* g₂ₖ₋₂                  ) ./ δ₂ₖ₋₁
+        g₂ₖ   .= (uₖ                     .- μ₂ₖ₋₄ .* g₂ₖ₋₄ .- λ₂ₖ₋₃ .* g₂ₖ₋₃ .- η₂ₖ₋₂ .* g₂ₖ₋₂ .- σ₂ₖ₋₁ .* g₂ₖ₋₁) ./ δ₂ₖ
+        @kswap!(gy₂ₖ₋₃, gy₂ₖ₋₁)
+        @kswap!(gy₂ₖ₋₂, gy₂ₖ)
       end
 
       # Update p̅ₖ = (Qₖ)ᴴ * (β₁e₁ + γ₁e₂)
@@ -493,28 +494,28 @@ kwargs_trimr = (:M, :N, :ldiv, :spd, :snd, :flip, :sp, :τ, :ν, :atol, :rtol, :
       πbar₂ₖ₊₁ = conj(s₄ₖ) * πtmp₂ₖ
 
       # Update xₖ = Gxₖ * pₖ
-      @kaxpy!(m, π₂ₖ₋₁, gx₂ₖ₋₁, xₖ)
-      @kaxpy!(m, π₂ₖ  , gx₂ₖ  , xₖ)
+      kaxpy!(m, π₂ₖ₋₁, gx₂ₖ₋₁, xₖ)
+      kaxpy!(m, π₂ₖ  , gx₂ₖ  , xₖ)
 
       # Update yₖ = Gyₖ * pₖ
-      @kaxpy!(n, π₂ₖ₋₁, gy₂ₖ₋₁, yₖ)
-      @kaxpy!(n, π₂ₖ  , gy₂ₖ  , yₖ)
+      kaxpy!(n, π₂ₖ₋₁, gy₂ₖ₋₁, yₖ)
+      kaxpy!(n, π₂ₖ  , gy₂ₖ  , yₖ)
 
       # Compute ‖rₖ‖² = |πbar₂ₖ₊₁|² + |πbar₂ₖ₊₂|²
       rNorm = sqrt(abs2(πbar₂ₖ₊₁) + abs2(πbar₂ₖ₊₂))
       history && push!(rNorms, rNorm)
 
       # Update vₖ and uₖ
-      MisI || (vₖ .= vₖ₊₁)
-      NisI || (uₖ .= uₖ₊₁)
+      MisI || kcopy!(m, vₖ, vₖ₊₁)  # vₖ ← vₖ₊₁
+      NisI || kcopy!(n, uₖ, uₖ₊₁)  # uₖ ← uₖ₊₁
 
       # Update M⁻¹vₖ₋₁ and N⁻¹uₖ₋₁
-      M⁻¹vₖ₋₁ .= M⁻¹vₖ
-      N⁻¹uₖ₋₁ .= N⁻¹uₖ
+      kcopy!(m, M⁻¹vₖ₋₁, M⁻¹vₖ)  # M⁻¹vₖ₋₁ ← M⁻¹vₖ
+      kcopy!(n, N⁻¹uₖ₋₁, N⁻¹uₖ)  # N⁻¹uₖ₋₁ ← N⁻¹uₖ
 
       # Update M⁻¹vₖ and N⁻¹uₖ
-      M⁻¹vₖ .= q
-      N⁻¹uₖ .= p
+      kcopy!(m, M⁻¹vₖ, q)  # M⁻¹vₖ ← q
+      kcopy!(n, N⁻¹uₖ, p)  # N⁻¹uₖ ← p
 
       # Update cosines and sines
       old_s₁ₖ = s₁ₖ
@@ -540,19 +541,15 @@ kwargs_trimr = (:M, :N, :ldiv, :spd, :snd, :flip, :sp, :τ, :ν, :atol, :rtol, :
       πbar₂ₖ₋₁ = πbar₂ₖ₊₁
       πbar₂ₖ   = πbar₂ₖ₊₂
 
-      # Stopping conditions that do not depend on user input.
-      # This is to guard against tolerances that are unreasonably small.
-      resid_decrease_mach = (rNorm + one(T) ≤ one(T))
-
       # Update stopping criterion.
-      user_requested_exit = callback(solver) :: Bool
+      user_requested_exit = callback(workspace) :: Bool
       resid_decrease_lim = rNorm ≤ ε
       breakdown = βₖ₊₁ ≤ btol && γₖ₊₁ ≤ btol
-      solved = resid_decrease_lim || resid_decrease_mach
+      solved = resid_decrease_lim
       tired = iter ≥ itmax
       timer = time_ns() - start_time
       overtimed = timer > timemax_ns
-      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %.2fs\n", iter, rNorm, βₖ₊₁, γₖ₊₁, ktimer(start_time))
+      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %.2fs\n", iter, rNorm, βₖ₊₁, γₖ₊₁, start_time |> ktimer)
     end
     (verbose > 0) && @printf(iostream, "\n")
 
@@ -564,16 +561,16 @@ kwargs_trimr = (:M, :N, :ldiv, :spd, :snd, :flip, :sp, :τ, :ν, :atol, :rtol, :
     overtimed           && (status = "time limit exceeded")
 
     # Update x and y
-    warm_start && @kaxpy!(m, one(FC), Δx, xₖ)
-    warm_start && @kaxpy!(n, one(FC), Δy, yₖ)
-    solver.warm_start = false
+    warm_start && kaxpy!(m, one(FC), Δx, xₖ)
+    warm_start && kaxpy!(n, one(FC), Δy, yₖ)
+    workspace.warm_start = false
 
     # Update stats
     stats.niter = iter
     stats.solved = solved
     stats.inconsistent = !solved && breakdown
-    stats.timer = ktimer(start_time)
+    stats.timer = start_time |> ktimer
     stats.status = status
-    return solver
+    return workspace
   end
 end

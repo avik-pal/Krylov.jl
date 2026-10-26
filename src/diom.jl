@@ -12,11 +12,11 @@ export diom, diom!
 
 """
     (x, stats) = diom(A, b::AbstractVector{FC};
-                      memory::Int=20, M=I, N=I, ldiv::Bool=false,
+                      memory::Int=20, M=I, N=I, W=I, ldiv::Bool=false,
                       reorthogonalization::Bool=false, atol::T=√eps(T),
                       rtol::T=√eps(T), itmax::Int=0,
                       timemax::Float64=Inf, verbose::Int=0, history::Bool=false,
-                      callback=solver->false, iostream::IO=kstdout)
+                      callback=workspace->false, iostream::IO=kstdout)
 
 `T` is an `AbstractFloat` such as `Float32`, `Float64` or `BigFloat`.
 `FC` is `T` or `Complex{T}`.
@@ -35,21 +35,31 @@ Otherwise, DIOM interpolates between CG and FOM and is similar to CG with partia
 An advantage of DIOM is that non-Hermitian or Hermitian indefinite or both non-Hermitian
 and indefinite systems of linear equations can be handled by this single algorithm.
 
+#### Interface
+
+To easily switch between Krylov methods, use the generic interface [`krylov_solve`](@ref) with `method = :diom`.
+
+For an in-place variant that reuses memory across solves, see [`diom!`](@ref).
+
 #### Input arguments
 
-* `A`: a linear operator that models a matrix of dimension n;
-* `b`: a vector of length n.
+* `A`: a linear operator that models a matrix of dimension `n`;
+* `b`: a vector of length `n`.
 
 #### Optional argument
 
-* `x0`: a vector of length n that represents an initial guess of the solution x.
+* `x0`: a vector of length `n` that represents an initial guess of the solution `x`.
 
 #### Keyword arguments
 
 * `memory`: the number of most recent vectors of the Krylov basis against which to orthogonalize a new vector;
 * `M`: linear operator that models a nonsingular matrix of size `n` used for left preconditioning;
 * `N`: linear operator that models a nonsingular matrix of size `n` used for right preconditioning;
+* `W`: linear operator that models a Hermitian positive definite matrix of size `n` defining the inner product ⟨x, y⟩_W = xᴴWy of the Krylov basis; the residual norms and the stopping tolerances refer to the norm ‖·‖_W. Not supported with a trust-region constraint. `W` is applied with `mul!`;
 * `ldiv`: define whether the preconditioners use `ldiv!` or `mul!`;
+* `radius`: add the trust-region constraint `‖x‖ ≤ radius` if `radius > 0`. Only useful for computing a step in a trust-region optimization method when A is Hermitian.
+  If `radius > 0`, and nonpositive curvature is detected along the current search direction, we take the step to the trust-region boundary.
+  When `radius > 0`, we assumes that `A = Aᴴ`. In this case, the preconditioners `M` and `N` must be the identity operator;
 * `reorthogonalization`: reorthogonalize the new vectors of the Krylov basis against the `memory` most recent vectors;
 * `atol`: absolute stopping tolerance based on the residual norm;
 * `rtol`: relative stopping tolerance based on the residual norm;
@@ -57,12 +67,12 @@ and indefinite systems of linear equations can be handled by this single algorit
 * `timemax`: the time limit in seconds;
 * `verbose`: additional details can be displayed if verbose mode is enabled (verbose > 0). Information will be displayed every `verbose` iterations;
 * `history`: collect additional statistics on the run such as residual norms, or Aᴴ-residual norms;
-* `callback`: function or functor called as `callback(solver)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
+* `callback`: function or functor called as `callback(workspace)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
 * `iostream`: stream to which output is logged.
 
 #### Output arguments
 
-* `x`: a dense vector of length n;
+* `x`: a dense vector of length `n`;
 * `stats`: statistics collected on the run in a [`SimpleStats`](@ref) structure.
 
 #### Reference
@@ -72,15 +82,18 @@ and indefinite systems of linear equations can be handled by this single algorit
 function diom end
 
 """
-    solver = diom!(solver::DiomSolver, A, b; kwargs...)
-    solver = diom!(solver::DiomSolver, A, b, x0; kwargs...)
+    workspace = diom!(workspace::DiomWorkspace, A, b; kwargs...)
+    workspace = diom!(workspace::DiomWorkspace, A, b, x0; kwargs...)
 
-where `kwargs` are keyword arguments of [`diom`](@ref).
+In these calls, `kwargs` are keyword arguments of [`diom`](@ref).
+The keyword argument `memory` is the only exception.
+It is only supported by `diom` and is required to create a `DiomWorkspace`.
+It cannot be changed later.
 
-Note that the `memory` keyword argument is the only exception.
-It's required to create a `DiomSolver` and can't be changed later.
+See [`DiomWorkspace`](@ref) for instructions on how to create the `workspace`.
 
-See [`DiomSolver`](@ref) for more details about the `solver`.
+For a more generic interface, you can use [`krylov_workspace`](@ref) with `method = :diom` to allocate the workspace,
+and [`krylov_solve!`](@ref) to run the Krylov method in-place.
 """
 function diom! end
 
@@ -91,7 +104,9 @@ def_optargs_diom = (:(x0::AbstractVector),)
 
 def_kwargs_diom = (:(; M = I                            ),
                    :(; N = I                            ),
+                   :(; W = I                            ),
                    :(; ldiv::Bool = false               ),
+                   :(; radius::T = zero(T)              ),
                    :(; reorthogonalization::Bool = false),
                    :(; atol::T = √eps(T)                ),
                    :(; rtol::T = √eps(T)                ),
@@ -99,86 +114,85 @@ def_kwargs_diom = (:(; M = I                            ),
                    :(; timemax::Float64 = Inf           ),
                    :(; verbose::Int = 0                 ),
                    :(; history::Bool = false            ),
-                   :(; callback = solver -> false       ),
+                   :(; callback = workspace -> false    ),
                    :(; iostream::IO = kstdout           ))
 
-def_kwargs_diom = mapreduce(extract_parameters, vcat, def_kwargs_diom)
+def_kwargs_workspace_diom = (:(; memory::Int = 20),)
+
+def_kwargs_diom = extract_parameters.(def_kwargs_diom)
+def_kwargs_workspace_diom = extract_parameters.(def_kwargs_workspace_diom)
 
 args_diom = (:A, :b)
 optargs_diom = (:x0,)
-kwargs_diom = (:M, :N, :ldiv, :reorthogonalization, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback, :iostream)
+kwargs_diom = (:M, :N, :W, :ldiv, :radius, :reorthogonalization, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback, :iostream)
+kwargs_workspace_diom = (:memory,)
 
 @eval begin
-  function diom($(def_args_diom...), $(def_optargs_diom...); memory :: Int=20, $(def_kwargs_diom...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = DiomSolver(A, b, memory)
-    warm_start!(solver, $(optargs_diom...))
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    diom!(solver, $(args_diom...); $(kwargs_diom...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.stats)
-  end
-
-  function diom($(def_args_diom...); memory :: Int=20, $(def_kwargs_diom...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = DiomSolver(A, b, memory)
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    diom!(solver, $(args_diom...); $(kwargs_diom...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.stats)
-  end
-
-  function diom!(solver :: DiomSolver{T,FC,S}, $(def_args_diom...); $(def_kwargs_diom...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
+  function diom!(workspace :: DiomWorkspace{T,FC,S}, $(def_args_diom...); $(def_kwargs_diom...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
 
     # Timer
     start_time = time_ns()
     timemax_ns = 1e9 * timemax
 
     m, n = size(A)
-    (m == solver.m && n == solver.n) || error("(solver.m, solver.n) = ($(solver.m), $(solver.n)) is inconsistent with size(A) = ($m, $n)")
+    (m == workspace.m && n == workspace.n) || error("(workspace.m, workspace.n) = ($(workspace.m), $(workspace.n)) is inconsistent with size(A) = ($m, $n)")
     m == n || error("System must be square")
     length(b) == m || error("Inconsistent problem size")
     (verbose > 0) && @printf(iostream, "DIOM: system of size %d\n", n)
+    (FC <: Complex && radius > 0) && error("trust-region constraint is not supported with complex numbers")
 
     # Check M = Iₙ and N = Iₙ
     MisI = (M === I)
     NisI = (N === I)
+    WisI = (W === I)
+    if radius > 0
+      (NisI && MisI) || error("trust-region constraint is not supported with a preconditioner")
+      WisI || error("trust-region constraint is not supported with an inner product W")
+    end
 
     # Check type consistency
     eltype(A) == FC || @warn "eltype(A) ≠ $FC. This could lead to errors or additional allocations in operator-vector products."
-    ktypeof(b) <: S || error("ktypeof(b) is not a subtype of $S")
+    ktypeof(b) == S || error("ktypeof(b) must be equal to $S")
 
     # Set up workspace.
-    allocate_if(!MisI, solver, :w, S, n)
-    allocate_if(!NisI, solver, :z, S, n)
-    Δx, x, t, P, V = solver.Δx, solver.x, solver.t, solver.P, solver.V
-    L, H, stats = solver.L, solver.H, solver.stats
-    warm_start = solver.warm_start
+    allocate_if(!MisI || !WisI, workspace, :w, S, workspace.x)  # The length of w is n
+    allocate_if(!NisI, workspace, :z, S, workspace.x)  # The length of z is n
+    Δx, x, t, P, V = workspace.Δx, workspace.x, workspace.t, workspace.P, workspace.V
+    L, H, stats = workspace.L, workspace.H, workspace.stats
+    warm_start = workspace.warm_start
     rNorms = stats.residuals
+    qxs = stats.qvals
     reset!(stats)
-    w  = MisI ? t : solver.w
-    r₀ = MisI ? t : solver.w
+    w  = MisI ? t : workspace.w
+    r₀ = MisI ? t : workspace.w
+    Ww = WisI ? w : (MisI ? workspace.w : t)  # Ww = W * w, t is free once w ← Mt
+    
 
-    # Initial solution x₀ and residual r₀.
-    x .= zero(FC)  # x₀
+    # Initial solution x₀, residual r₀ and q(x₀).
+    kfill!(x, zero(FC))  # x₀ ← 0
     if warm_start
-      mul!(t, A, Δx)
-      @kaxpby!(n, one(FC), b, -one(FC), t)
+      kmul!(t, A, Δx)
+      (radius > 0) &&  (qx = kdot(n, Δx, t) / 2 - kdot(n, b, Δx))    # q(x₀) = ½ΔxᵀAΔx - bᵀΔx
+      kaxpby!(n, one(FC), b, -one(FC), t)
     else
-      t .= b
+      kcopy!(n, t, b)  # t ← b
+      (radius > 0) && (qx = zero(T))  # Quadratic model value at x₀ = 0
     end
     MisI || mulorldiv!(r₀, M, t, ldiv)  # M(b - Ax₀)
-    rNorm = @knrm2(n, r₀)               # β = ‖r₀‖₂
-    history && push!(rNorms, rNorm)
+    WisI || kmul!(Ww, W, r₀)
+    rNorm = knorm_elliptic(n, r₀, Ww)   # β = ‖r₀‖_W
+    if history
+      push!(rNorms, rNorm)
+      (radius > 0) && push!(qxs, qx)
+    end
     if rNorm == 0
       stats.niter = 0
       stats.solved, stats.inconsistent = true, false
-      stats.timer = ktimer(start_time)
-      stats.status = "x = 0 is a zero-residual solution"
-      solver.warm_start = false
-      return solver
+      stats.timer = start_time |> ktimer
+      stats.status = "x is a zero-residual solution"
+      warm_start && kaxpy!(n, one(FC), Δx, x)
+      workspace.warm_start = false
+      return workspace
     end
 
     iter = 0
@@ -186,34 +200,30 @@ kwargs_diom = (:M, :N, :ldiv, :reorthogonalization, :atol, :rtol, :itmax, :timem
 
     ε = atol + rtol * rNorm
     (verbose > 0) && @printf(iostream, "%5s  %7s  %5s\n", "k", "‖rₖ‖", "timer")
-    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %.2fs\n", iter, rNorm, ktimer(start_time))
+    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %.2fs\n", iter, rNorm, start_time |> ktimer)
 
+    # Set up workspace.
     mem = length(V)  # Memory
-    for i = 1 : mem
-      V[i] .= zero(FC)  # Orthogonal basis of Kₖ(MAN, Mr₀).
-    end
-    for i = 1 : mem-1
-      P[i] .= zero(FC)  # Directions Pₖ = NVₖ(Uₖ)⁻¹.
-    end
-    H .= zero(FC)  # Last column of the band hessenberg matrix Hₖ = LₖUₖ.
-    # Each column has at most mem + 1 nonzero elements.
+    kfill!(H, zero(FC))  # Last column of the band hessenberg matrix Hₖ = LₖUₖ.
+    # Each column of Hₖ has at most mem + 1 nonzero elements.
     # hᵢ.ₖ is stored as H[k-i+1], i ≤ k. hₖ₊₁.ₖ is not stored in H.
-    # k-i+1 represents the indice of the diagonal where hᵢ.ₖ is located.
+    # k-i+1 represents the index of the diagonal where hᵢ.ₖ is located.
     # In addition of that, the last column of Uₖ is stored in H.
-    L .= zero(FC)  # Last mem-1 pivots of Lₖ.
+    kfill!(L, zero(FC))  # Last mem-1 pivots of Lₖ.
 
-    # Initial ξ₁ and V₁.
+    # Initial ξ₁ and v₁.
     ξ = rNorm
-    V[1] .= r₀ ./ rNorm
+    kdivcopy!(n, V[1], r₀, rNorm)  # v₁ = r₀ / ‖r₀‖
 
     # Stopping criterion.
     solved = rNorm ≤ ε
+    on_boundary = false
     tired = iter ≥ itmax
     status = "unknown"
     user_requested_exit = false
     overtimed = false
 
-    while !(solved || tired || user_requested_exit || overtimed)
+    while !(solved || tired || user_requested_exit || overtimed || on_boundary)
 
       # Update iteration index.
       iter = iter + 1
@@ -223,15 +233,16 @@ kwargs_diom = (:M, :N, :ldiv, :reorthogonalization, :atol, :rtol, :itmax, :timem
       next_pos = mod(iter, mem) + 1  # Position corresponding to vₖ₊₁ in the circular stack V.
 
       # Incomplete Arnoldi procedure.
-      z = NisI ? V[pos] : solver.z
+      z = NisI ? V[pos] : workspace.z
       NisI || mulorldiv!(z, N, V[pos], ldiv)  # Nvₖ, forms pₖ
-      mul!(t, A, z)                           # ANvₖ
+      kmul!(t, A, z)                          # ANvₖ
       MisI || mulorldiv!(w, M, t, ldiv)       # MANvₖ, forms vₖ₊₁
       for i = max(1, iter-mem+1) : iter
         ipos = mod(i-1, mem) + 1  # Position corresponding to vᵢ in the circular stack V.
         diag = iter - i + 1
-        H[diag] = @kdot(n, w, V[ipos])    # hᵢ.ₖ = ⟨MANvₖ, vᵢ⟩
-        @kaxpy!(n, -H[diag], V[ipos], w)  # w ← w - hᵢ.ₖvᵢ
+        WisI || kmul!(Ww, W, w)
+        H[diag] = kdot(n, V[ipos], Ww)   # hᵢ.ₖ = ⟨vᵢ, MANvₖ⟩_W
+        kaxpy!(n, -H[diag], V[ipos], w)  # w ← w - hᵢ.ₖvᵢ
       end
 
       # Partial reorthogonalization of the Krylov basis.
@@ -239,19 +250,32 @@ kwargs_diom = (:M, :N, :ldiv, :reorthogonalization, :atol, :rtol, :itmax, :timem
         for i = max(1, iter-mem+1) : iter
           ipos = mod(i-1, mem) + 1
           diag = iter - i + 1
-          Htmp = @kdot(n, w, V[ipos])
+          WisI || kmul!(Ww, W, w)
+          Htmp = kdot(n, V[ipos], Ww)
           H[diag] += Htmp
-          @kaxpy!(n, -Htmp, V[ipos], w)
+          kaxpy!(n, -Htmp, V[ipos], w)
         end
       end
 
       # Compute hₖ₊₁.ₖ and vₖ₊₁.
-      Haux = @knrm2(n, w)         # hₖ₊₁.ₖ = ‖vₖ₊₁‖₂
-      if Haux ≠ 0                 # hₖ₊₁.ₖ = 0 ⇒ "lucky breakdown"
-        V[next_pos] .= w ./ Haux  # vₖ₊₁ = w / hₖ₊₁.ₖ
+      WisI || kmul!(Ww, W, w)
+      Haux = knorm_elliptic(n, w, Ww)  # hₖ₊₁.ₖ = ‖vₖ₊₁‖_W
+      if Haux ≠ 0   # hₖ₊₁.ₖ = 0 ⇒ "lucky breakdown"
+        kdivcopy!(n, V[next_pos], w, Haux)  # vₖ₊₁ = w / hₖ₊₁.ₖ
       end
 
       # Update the LU factorization of Hₖ.
+      #
+      # [ h₁.₁  •    •  h₁.ₘₑₘ 0    •    •    0        ]   [  1                          ] [ u₁.₁  •    •  u₁.ₘₑₘ 0    •    •    0        ]
+      # [ h₂.₁  •    •    •    •    0         •        ]   [ l₂.₁ •                      ] [  0    •    •    •    •    0         •        ]
+      # [  0    •    •    •    •    •    0    •        ]   [      •  •                   ] [  •    0    •    •    •    •    0    •        ]
+      # [  •    0    •    •    •    •    •    0        ]   [         •  •                ] [  •         0    •    •    •    •    0        ]
+      # [  •         0    •    •    •    •  hₖ₋ₘₑₘ₊₁.ₖ ] = [            •  •             ] [  •              0    •    •    •  uₖ₋ₘₑₘ₊₁.ₖ ]
+      # [  •              0    •    •    •    •        ]   [               •  •          ] [  •                   0    •    •    •        ]
+      # [  •                   0    •    •    •        ]   [                  •  •       ] [  •                        0    •    •        ]
+      # [  •                        0    •  hₖ.ₖ       ]   [                     •  1    ] [  •                             0  uₖ.ₖ       ]
+      # [  0    •    •    •    •    •    0  hₖ₊₁.ₖ     ]   [                      lₖ₊₁.ₖ ] [  0    •    •    •    •    •    •    0        ]
+
       # Compute the last column of Uₖ.
       if iter ≥ 2
         # u₁.ₖ ← h₁.ₖ             if iter ≤ mem
@@ -276,64 +300,96 @@ kwargs_diom = (:M, :N, :ldiv, :reorthogonalization, :atol, :rtol, :itmax, :timem
       ppos = mod(iter-1, mem-1) + 1 # Position corresponding to pₖ in the circular stack P.
 
       # Compute the direction pₖ, the last column of Pₖ = NVₖ(Uₖ)⁻¹.
-      # u₁.ₖp₁ + ... + uₖ.ₖpₖ = Nvₖ             if k ≤ mem
-      # uₖ₋ₘₑₘ₊₁.ₖpₖ₋ₘₑₘ₊₁ + ... + uₖ.ₖpₖ = Nvₖ if k ≥ mem + 1
+      # u₁.ₖp₁ + ... + uₖ.ₖpₖ = Nvₖ             if k ≤ mem - 1
+      # uₖ₋ₘₑₘ₊₁.ₖpₖ₋ₘₑₘ₊₁ + ... + uₖ.ₖpₖ = Nvₖ if k ≥ mem
+      if iter < mem
+        # pₐᵤₓ ← Nvₖ
+        # The copy overwrites P[ppos], so the workspace does not need to be zero-initialized.
+        kcopy!(n, P[ppos], z)
+      end
       for i = max(1,iter-mem+1) : iter-1
         ipos = mod(i-1, mem-1) + 1  # Position corresponding to pᵢ in the circular stack P.
         diag = iter - i + 1
         if ipos == ppos
           # pₖ ← -uₖ₋ₘₑₘ₊₁.ₖ * pₖ₋ₘₑₘ₊₁
-          @kscal!(n, -H[diag], P[ppos])
+          kscal!(n, -H[diag], P[ppos])
         else
           # pₖ ← pₖ - uᵢ.ₖ * pᵢ
-          @kaxpy!(n, -H[diag], P[ipos], P[ppos])
+          kaxpy!(n, -H[diag], P[ipos], P[ppos])
         end
       end
-      # pₐᵤₓ ← pₐᵤₓ + Nvₖ
-      @kaxpy!(n, one(FC), z, P[ppos])
-      # pₖ = pₐᵤₓ / uₖ.ₖ
-      P[ppos] .= P[ppos] ./ H[1]
+      if iter ≥ mem
+        # pₐᵤₓ ← pₐᵤₓ + Nvₖ
+        kaxpy!(n, one(FC), z, P[ppos])
+      end
+
+      if radius > 0
+        # Compute step size to boundary.
+        # σ is the largest root of ‖x + σ ξₖ pₐᵤₓ‖ = radius.
+        σ₁, σ₂ = to_boundary(n, x, P[ppos], z, radius)
+        σ = max(σ₁ / ξ, σ₂ / ξ)
+
+        # Move along pₐᵤₓ from x to the boundary if either
+        # the next step leads outside the trust region or
+        # we have nonpositive curvature.
+        indefinite = H[1] ≤ zero(T)
+        stats.indefinite = indefinite
+        on_boundary = indefinite || (H[1] * σ < one(T))
+      end
+
+      if on_boundary
+        # pₖ = σ * pₐᵤₓ
+        kscal!(n, σ, P[ppos])
+      else
+        # pₖ = pₐᵤₓ / uₖ.ₖ
+        kdiv!(n, P[ppos], H[1])
+      end
 
       # Update solution xₖ.
       # xₖ = xₖ₋₁ + ξₖ * pₖ
-      @kaxpy!(n, ξ, P[ppos], x)
+      kaxpy!(n, ξ, P[ppos], x)
 
       # Compute residual norm.
-      # ‖ M(b - Axₖ) ‖₂ = hₖ₊₁.ₖ * |ξₖ / uₖ.ₖ|
-      rNorm = Haux * abs(ξ / H[1])
-      history && push!(rNorms, rNorm)
-
-      # Stopping conditions that do not depend on user input.
-      # This is to guard against tolerances that are unreasonably small.
-      resid_decrease_mach = (rNorm + one(T) ≤ one(T))
+      if !on_boundary
+        rNorm = Haux * abs(ξ / H[1])  # ‖ M(b - Axₖ) ‖_W = hₖ₊₁.ₖ * |ξₖ / uₖ.ₖ| 
+        (radius > 0) && (qx -= abs(ξ)^2 / abs(H[1]) / 2)  # q(xₖ) = q(xₖ₋₁) -0.5*ξₖ²/uₖ.ₖ
+      else 
+        rNorm = sqrt(abs(rNorm - abs(ξ) * H[1] * σ)^2 + abs(Haux * ξ * σ)^2)  # ‖ M(b - Axₖ) ‖₂ if we hit the boundary
+        qx += (σ^2 / 2) * ξ^2 * H[1] - σ * ξ^2  # q(xₖ) if we hit the boundary
+      end
+      if history
+        push!(rNorms, rNorm)
+        (radius > 0) && push!(qxs, qx)
+      end
 
       # Update stopping criterion.
-      user_requested_exit = callback(solver) :: Bool
+      user_requested_exit = callback(workspace) :: Bool
       resid_decrease_lim = rNorm ≤ ε
-      solved = resid_decrease_lim || resid_decrease_mach
+      solved = resid_decrease_lim
       tired = iter ≥ itmax
       timer = time_ns() - start_time
       overtimed = timer > timemax_ns
-      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %.2fs\n", iter, rNorm, ktimer(start_time))
+      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %.2fs\n", iter, rNorm, start_time |> ktimer)
     end
     (verbose > 0) && @printf(iostream, "\n")
 
     # Termination status
+    on_boundary         && (status = "on trust-region boundary")
     tired               && (status = "maximum number of iterations exceeded")
     solved              && (status = "solution good enough given atol and rtol")
     user_requested_exit && (status = "user-requested exit")
     overtimed           && (status = "time limit exceeded")
 
     # Update x
-    warm_start && @kaxpy!(n, one(FC), Δx, x)
-    solver.warm_start = false
+    warm_start && kaxpy!(n, one(FC), Δx, x)
+    workspace.warm_start = false
 
     # Update stats
     stats.niter = iter
     stats.solved = solved
     stats.inconsistent = false
-    stats.timer = ktimer(start_time)
+    stats.timer = start_time |> ktimer
     stats.status = status
-    return solver
+    return workspace
   end
 end

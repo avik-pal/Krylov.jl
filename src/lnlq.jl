@@ -33,7 +33,7 @@ export lnlq, lnlq!
                          utoly::T=√eps(T), atol::T=√eps(T),
                          rtol::T=√eps(T), itmax::Int=0,
                          timemax::Float64=Inf, verbose::Int=0, history::Bool=false,
-                         callback=solver->false, iostream::IO=kstdout)
+                         callback=workspace->false, iostream::IO=kstdout)
 
 `T` is an `AbstractFloat` such as `Float32`, `Float64` or `BigFloat`.
 `FC` is `T` or `Complex{T}`.
@@ -83,10 +83,16 @@ In this implementation, both the x and y-parts of the solution are returned.
 The bound is valid if λ>0 or σ>0 where σ should be strictly smaller than the smallest positive singular value.
 For instance σ:=(1-1e-7)σₘᵢₙ .
 
+#### Interface
+
+To easily switch between Krylov methods, use the generic interface [`krylov_solve`](@ref) with `method = :lnlq`.
+
+For an in-place variant that reuses memory across solves, see [`lnlq!`](@ref).
+
 #### Input arguments
 
-* `A`: a linear operator that models a matrix of dimension m × n;
-* `b`: a vector of length m.
+* `A`: a linear operator that models a matrix of dimension `m × n`;
+* `b`: a vector of length `m`.
 
 #### Keyword arguments
 
@@ -105,13 +111,13 @@ For instance σ:=(1-1e-7)σₘᵢₙ .
 * `timemax`: the time limit in seconds;
 * `verbose`: additional details can be displayed if verbose mode is enabled (verbose > 0). Information will be displayed every `verbose` iterations;
 * `history`: collect additional statistics on the run such as residual norms, or Aᴴ-residual norms;
-* `callback`: function or functor called as `callback(solver)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
+* `callback`: function or functor called as `callback(workspace)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
 * `iostream`: stream to which output is logged.
 
 #### Output arguments
 
-* `x`: a dense vector of length n;
-* `y`: a dense vector of length m;
+* `x`: a dense vector of length `n`;
+* `y`: a dense vector of length `m`;
 * `stats`: statistics collected on the run in a [`LNLQStats`](@ref) structure.
 
 #### Reference
@@ -121,11 +127,14 @@ For instance σ:=(1-1e-7)σₘᵢₙ .
 function lnlq end
 
 """
-    solver = lnlq!(solver::LnlqSolver, A, b; kwargs...)
+    workspace = lnlq!(workspace::LnlqWorkspace, A, b; kwargs...)
 
-where `kwargs` are keyword arguments of [`lnlq`](@ref).
+In this call, `kwargs` are keyword arguments of [`lnlq`](@ref).
 
-See [`LnlqSolver`](@ref) for more details about the `solver`.
+See [`LnlqWorkspace`](@ref) for instructions on how to create the `workspace`.
+
+For a more generic interface, you can use [`krylov_workspace`](@ref) with `method = :lnlq` to allocate the workspace,
+and [`krylov_solve!`](@ref) to run the Krylov method in-place.
 """
 function lnlq! end
 
@@ -147,33 +156,23 @@ def_kwargs_lnlq = (:(; M = I                         ),
                    :(; timemax::Float64 = Inf        ),
                    :(; verbose::Int = 0              ),
                    :(; history::Bool = false         ),
-                   :(; callback = solver -> false    ),
+                   :(; callback = workspace -> false ),
                    :(; iostream::IO = kstdout        ))
 
-def_kwargs_lnlq = mapreduce(extract_parameters, vcat, def_kwargs_lnlq)
+def_kwargs_lnlq = extract_parameters.(def_kwargs_lnlq)
 
 args_lnlq = (:A, :b)
 kwargs_lnlq = (:M, :N, :ldiv, :transfer_to_craig, :sqd, :λ, :σ, :utolx, :utoly, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback, :iostream)
 
 @eval begin
-  function lnlq($(def_args_lnlq...); $(def_kwargs_lnlq...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = LnlqSolver(A, b)
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    lnlq!(solver, $(args_lnlq...); $(kwargs_lnlq...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.y, solver.stats)
-  end
-
-  function lnlq!(solver :: LnlqSolver{T,FC,S}, $(def_args_lnlq...); $(def_kwargs_lnlq...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
+  function lnlq!(workspace :: LnlqWorkspace{T,FC,Sm,Sn}, $(def_args_lnlq...); $(def_kwargs_lnlq...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, Sm <: AbstractVector{FC}, Sn <: AbstractVector{FC}}
 
     # Timer
     start_time = time_ns()
     timemax_ns = 1e9 * timemax
 
     m, n = size(A)
-    (m == solver.m && n == solver.n) || error("(solver.m, solver.n) = ($(solver.m), $(solver.n)) is inconsistent with size(A) = ($m, $n)")
+    (m == workspace.m && n == workspace.n) || error("(workspace.m, workspace.n) = ($(workspace.m), $(workspace.n)) is inconsistent with size(A) = ($m, $n)")
     length(b) == m || error("Inconsistent problem size")
     (verbose > 0) && @printf(iostream, "LNLQ: system of %d equations in %d variables\n", m, n)
 
@@ -187,39 +186,39 @@ kwargs_lnlq = (:M, :N, :ldiv, :transfer_to_craig, :sqd, :λ, :σ, :utolx, :utoly
 
     # Check type consistency
     eltype(A) == FC || @warn "eltype(A) ≠ $FC. This could lead to errors or additional allocations in operator-vector products."
-    ktypeof(b) <: S || error("ktypeof(b) is not a subtype of $S")
+    ktypeof(b) == Sm || error("ktypeof(b) must be equal to $Sm")
 
     # Compute the adjoint of A
     Aᴴ = A'
 
     # Set up workspace.
-    allocate_if(!MisI, solver, :u, S, m)
-    allocate_if(!NisI, solver, :v, S, n)
-    allocate_if(λ > 0, solver, :q, S, n)
-    x, Nv, Aᴴu, y, w̄ = solver.x, solver.Nv, solver.Aᴴu, solver.y, solver.w̄
-    Mu, Av, q, stats = solver.Mu, solver.Av, solver.q, solver.stats
+    allocate_if(!MisI, workspace, :u, Sm, workspace.y)  # The length of u is m
+    allocate_if(!NisI, workspace, :v, Sn, workspace.x)  # The length of v is n
+    allocate_if(λ > 0, workspace, :q, Sn, workspace.x)  # The length of q is n
+    x, Nv, Aᴴu, y, w̄ = workspace.x, workspace.Nv, workspace.Aᴴu, workspace.y, workspace.w̄
+    Mu, Av, q, stats = workspace.Mu, workspace.Av, workspace.q, workspace.stats
     rNorms, xNorms, yNorms = stats.residuals, stats.error_bnd_x, stats.error_bnd_y
     reset!(stats)
-    u = MisI ? Mu : solver.u
-    v = NisI ? Nv : solver.v
+    u = MisI ? Mu : workspace.u
+    v = NisI ? Nv : workspace.v
 
     # Set up parameter σₑₛₜ for the error estimate on x and y
     σₑₛₜ = √(σ^2 + λ^2)
     complex_error_bnd = false
 
     # Initial solutions (x₀, y₀) and residual norm ‖r₀‖.
-    x .= zero(FC)
-    y .= zero(FC)
+    kfill!(x, zero(FC))
+    kfill!(y, zero(FC))
 
-    bNorm = @knrm2(m, b)
+    bNorm = knorm(m, b)
     if bNorm == 0
       stats.niter = 0
       stats.solved = true
       stats.error_with_bnd = false
       history && push!(rNorms, bNorm)
-      stats.timer = ktimer(start_time)
-      stats.status = "x = 0 is a zero-residual solution"
-      return solver
+      stats.timer = start_time |> ktimer
+      stats.status = "x is a zero-residual solution"
+      return workspace
     end
 
     history && push!(rNorms, bNorm)
@@ -229,42 +228,43 @@ kwargs_lnlq = (:M, :N, :ldiv, :transfer_to_craig, :sqd, :λ, :σ, :utolx, :utoly
     itmax == 0 && (itmax = m + n)
 
     (verbose > 0) && @printf(iostream, "%5s  %7s  %5s\n", "k", "‖rₖ‖", "timer")
-    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %.2fs\n", iter, bNorm, ktimer(start_time))
+    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %.2fs\n", iter, bNorm, start_time |> ktimer)
 
-    # Update iteration index
+    # Update iteration index.
     iter = iter + 1
 
     # Initialize generalized Golub-Kahan bidiagonalization.
     # β₁Mu₁ = b.
-    Mu .= b
+    kcopy!(m, Mu, b)  # Mu ← b
     MisI || mulorldiv!(u, M, Mu, ldiv)  # u₁ = M⁻¹ * Mu₁
-    βₖ = sqrt(@kdotr(m, u, Mu))         # β₁ = ‖u₁‖_M
+    βₖ = knorm_elliptic(m, u, Mu)       # β₁ = ‖u₁‖_M
     if βₖ ≠ 0
-      @kscal!(m, one(FC) / βₖ, u)
-      MisI || @kscal!(m, one(FC) / βₖ, Mu)
+      kdiv!(m, u, βₖ)
+      MisI || kdiv!(m, Mu, βₖ)
     end
 
     # α₁Nv₁ = Aᴴu₁.
-    mul!(Aᴴu, Aᴴ, u)
-    Nv .= Aᴴu
+    kmul!(Aᴴu, Aᴴ, u)
+    kcopy!(n, Nv, Aᴴu)  # Nv ← Aᴴu
     NisI || mulorldiv!(v, N, Nv, ldiv)  # v₁ = N⁻¹ * Nv₁
-    αₖ = sqrt(@kdotr(n, v, Nv))         # α₁ = ‖v₁‖_N
+    αₖ = knorm_elliptic(n, v, Nv)       # α₁ = ‖v₁‖_N
     if αₖ ≠ 0
-      @kscal!(n, one(FC) / αₖ, v)
-      NisI || @kscal!(n, one(FC) / αₖ, Nv)
+      kdiv!(n, v, αₖ)
+      NisI || kdiv!(n, Nv, αₖ)
     end
 
-    w̄ .= u           # Direction w̄₁
-    cₖ = zero(T)     # Givens cosines used for the LQ factorization of (Lₖ)ᴴ
-    sₖ = zero(FC)    # Givens sines used for the LQ factorization of (Lₖ)ᴴ
-    ζₖ₋₁ = zero(FC)  # ζₖ₋₁ and ζbarₖ are the last components of z̅ₖ
-    ηₖ = zero(FC)    # Coefficient of M̅ₖ
+    kcopy!(m, w̄, u)       # Direction w̄₁
+    cₖ = zero(T)          # Givens cosines used for the LQ factorization of (Lₖ)ᴴ
+    sₖ = zero(FC)         # Givens sines used for the LQ factorization of (Lₖ)ᴴ
+    ζₖ₋₁ = zero(FC)       # ζₖ₋₁ and ζbarₖ are the last components of z̅ₖ
+    θₖ = θₖ₊₁ = zero(FC)  # θₖ and θₖ₊₁ are used to update ζₖ and ζbarₖ₊₁
+    ηₖ = zero(FC)         # Coefficient of M̅ₖ
 
     # Variable used for the regularization.
-    λₖ  = λ             # λ₁ = λ
-    cpₖ = spₖ = one(T)  # Givens sines and cosines used to zero out λₖ
-    cdₖ = sdₖ = one(FC) # Givens sines and cosines used to define λₖ₊₁
-    λ > 0 && (q .= v)   # Additional vector needed to update x, by definition q₀ = 0
+    λₖ  = λ              # λ₁ = λ
+    cpₖ = spₖ = one(T)   # Givens sines and cosines used to zero out λₖ
+    cdₖ = sdₖ = one(FC)  # Givens sines and cosines used to define λₖ₊₁
+    λ > 0 && kcopy!(n, q, v)  # Additional vector needed to update x, by definition q₀ = 0
 
     # Initialize the regularization.
     if λ > 0
@@ -274,7 +274,7 @@ kwargs_lnlq = (:M, :N, :ldiv, :transfer_to_craig, :sqd, :λ, :σ, :utolx, :utoly
       (cpₖ, spₖ, αhatₖ) = sym_givens(αₖ, λₖ)
 
       # q̄₁ = sp₁ * v₁
-      @kscal!(n, spₖ, q)
+      kscal!(n, spₖ, q)
     else
       αhatₖ = αₖ
     end
@@ -299,9 +299,11 @@ kwargs_lnlq = (:M, :N, :ldiv, :transfer_to_craig, :sqd, :λ, :σ, :utolx, :utoly
 
     τₖ    = βₖ / αhatₖ  # τ₁ = β₁ / αhat₁
     ζbarₖ = τₖ / ϵbarₖ  # ζbar₁ = τ₁ / ϵbar₁
+    θₖ    = τₖ
 
     # Stopping criterion.
-    solved_lq = solved_cg = false
+    solved_lq = false
+    solved_cg = false
     tired = false
     status = "unknown"
     user_requested_exit = false
@@ -322,19 +324,18 @@ kwargs_lnlq = (:M, :N, :ldiv, :transfer_to_craig, :sqd, :λ, :σ, :utolx, :utoly
     end
 
     while !(solved_lq || solved_cg || tired || user_requested_exit || overtimed)
-
       # Update of (xᵃᵘˣ)ₖ = Vₖtₖ
       if λ > 0
         # (xᵃᵘˣ)ₖ ← (xᵃᵘˣ)ₖ₋₁ + τₖ * (cpₖvₖ + spₖqₖ₋₁)
-        @kaxpy!(n, τₖ * cpₖ, v, x)
+        kaxpy!(n, τₖ * cpₖ, v, x)
         if iter ≥ 2
-          @kaxpy!(n, τₖ * spₖ, q, x)
+          kaxpy!(n, τₖ * spₖ, q, x)
           # q̄ₖ ← spₖ * vₖ - cpₖ * qₖ₋₁
-          @kaxpby!(n, spₖ, v, -cpₖ, q)
+          kaxpby!(n, spₖ, v, -cpₖ, q)
         end
       else
         # (xᵃᵘˣ)ₖ ← (xᵃᵘˣ)ₖ₋₁ + τₖ * vₖ
-        @kaxpy!(n, τₖ, v, x)
+        kaxpy!(n, τₖ, v, x)
       end
 
       # Continue the generalized Golub-Kahan bidiagonalization.
@@ -353,23 +354,23 @@ kwargs_lnlq = (:M, :N, :ldiv, :transfer_to_craig, :sqd, :λ, :σ, :utolx, :utoly
       #      [ βₖ₊₁(eₖ)ᵀ ]
 
       # βₖ₊₁Muₖ₊₁ = Avₖ - αₖMuₖ
-      mul!(Av, A, v)
-      @kaxpby!(m, one(FC), Av, -αₖ, Mu)
+      kmul!(Av, A, v)
+      kaxpby!(m, one(FC), Av, -αₖ, Mu)
       MisI || mulorldiv!(u, M, Mu, ldiv)  # uₖ₊₁ = M⁻¹ * Muₖ₊₁
-      βₖ₊₁ = sqrt(@kdotr(m, u, Mu))       # βₖ₊₁ = ‖uₖ₊₁‖_M
+      βₖ₊₁ = knorm_elliptic(m, u, Mu)     # βₖ₊₁ = ‖uₖ₊₁‖_M
       if βₖ₊₁ ≠ 0
-        @kscal!(m, one(FC) / βₖ₊₁, u)
-        MisI || @kscal!(m, one(FC) / βₖ₊₁, Mu)
+        kdiv!(m, u, βₖ₊₁)
+        MisI || kdiv!(m, Mu, βₖ₊₁)
       end
 
       # αₖ₊₁Nvₖ₊₁ = Aᴴuₖ₊₁ - βₖ₊₁Nvₖ
-      mul!(Aᴴu, Aᴴ, u)
-      @kaxpby!(n, one(FC), Aᴴu, -βₖ₊₁, Nv)
+      kmul!(Aᴴu, Aᴴ, u)
+      kaxpby!(n, one(FC), Aᴴu, -βₖ₊₁, Nv)
       NisI || mulorldiv!(v, N, Nv, ldiv)  # vₖ₊₁ = N⁻¹ * Nvₖ₊₁
-      αₖ₊₁ = sqrt(@kdotr(n, v, Nv))       # αₖ₊₁ = ‖vₖ₊₁‖_N
+      αₖ₊₁ = knorm_elliptic(n, v, Nv)     # αₖ₊₁ = ‖vₖ₊₁‖_N
       if αₖ₊₁ ≠ 0
-        @kscal!(n, one(FC) / αₖ₊₁, v)
-        NisI || @kscal!(n, one(FC) / αₖ₊₁, Nv)
+        kdiv!(n, v, αₖ₊₁)
+        NisI || kdiv!(n, Nv, αₖ₊₁)
       end
 
       # Continue the regularization.
@@ -386,7 +387,7 @@ kwargs_lnlq = (:M, :N, :ldiv, :transfer_to_craig, :sqd, :λ, :σ, :utolx, :utoly
         (cdₖ, sdₖ, λₖ₊₁) = sym_givens(λ, θₖ₊₁)
 
         # qₖ ← sdₖ * q̄ₖ
-        @kscal!(n, sdₖ, q)
+        kscal!(n, sdₖ, q)
 
         #       k+1   2k+1      k+1    2k+1        k+1     2k+1
         # k+1 [ αₖ₊₁  λₖ₊₁ ] [ cpₖ₊₁  spₖ₊₁ ] = [ αhatₖ₊₁   0   ]
@@ -419,30 +420,37 @@ kwargs_lnlq = (:M, :N, :ldiv, :transfer_to_craig, :sqd, :λ, :σ, :utolx, :utoly
         ρbar = ssig * μbar + csig * σₑₛₜ
       end
 
+      # Update the solution of Lₖ₊₁tₖ₊₁ = β₁e₁.
+      # [βhatₖ₊₁  αhatₖ₊₁] [τₖ  ] = [0]
+      #                    [τₖ₊₁]
+      τₖ₊₁ = - βhatₖ₊₁ * τₖ / αhatₖ₊₁
+
       # Continue the LQ factorization of (Lₖ₊₁)ᴴ.
-      # [ηₖ ϵbarₖ βₖ₊₁] [1     0     0 ] = [ηₖ  ϵₖ     0    ]
-      # [0    0   αₖ₊₁] [0   cₖ₊₁  sₖ₊₁]   [0  ηₖ₊₁  ϵbarₖ₊₁]
-      #                 [0   sₖ₊₁ -cₖ₊₁]
-
+      # [ηₖ  ϵbarₖ  βₖ₊₁] [1     0     0 ] = [ηₖ  ϵₖ     0    ]
+      # [0     0    αₖ₊₁] [0   cₖ₊₁  sₖ₊₁]   [0  ηₖ₊₁  ϵbarₖ₊₁]
+      #                   [0   sₖ₊₁ -cₖ₊₁]
       (cₖ₊₁, sₖ₊₁, ϵₖ) = sym_givens(ϵbarₖ, βhatₖ₊₁)
-      ηₖ₊₁    =   αhatₖ₊₁ * sₖ₊₁
-      ϵbarₖ₊₁ = - αhatₖ₊₁ * cₖ₊₁
+      ηₖ₊₁    =  αhatₖ₊₁ * sₖ₊₁
+      ϵbarₖ₊₁ = -αhatₖ₊₁ * cₖ₊₁
 
-      # Update solutions of Lₖ₊₁tₖ₊₁ = β₁e₁ and M̅ₖ₊₁z̅ₖ₊₁ = tₖ₊₁.
-      τₖ₊₁    = - βhatₖ₊₁ * τₖ / αhatₖ₊₁
-      ζₖ      = cₖ₊₁ * ζbarₖ
-      ζbarₖ₊₁ = (τₖ₊₁ - ηₖ₊₁ * ζₖ) / ϵbarₖ₊₁
+      # Update the solution of M̅ₖ₊₁z̅ₖ₊₁ = tₖ₊₁.
+      # [ηₖ  ϵₖ       0   ] [ζₖ₋₁   ] = [τₖ  ]
+      # [0   ηₖ₊₁  ϵbarₖ₊₁] [ζₖ     ]   [τₖ₊₁]
+      #                     [ζbarₖ₊₁]
+      ζₖ      = θₖ / ϵₖ
+      θₖ₊₁    = τₖ₊₁ - ηₖ₊₁ * ζₖ
+      ζbarₖ₊₁ = θₖ₊₁ / ϵbarₖ₊₁
 
       # Relations for the directions wₖ and w̄ₖ₊₁
       # [w̄ₖ uₖ₊₁] [cₖ₊₁  sₖ₊₁] = [wₖ w̄ₖ₊₁] → wₖ   = cₖ₊₁ * w̄ₖ + sₖ₊₁ * uₖ₊₁
       #           [sₖ₊₁ -cₖ₊₁]             → w̄ₖ₊₁ = sₖ₊₁ * w̄ₖ - cₖ₊₁ * uₖ₊₁
 
       # (yᴸ)ₖ₊₁ ← (yᴸ)ₖ + ζₖ * wₖ
-      @kaxpy!(m, ζₖ * cₖ₊₁, w̄, y)
-      @kaxpy!(m, ζₖ * sₖ₊₁, u, y)
+      kaxpy!(m, ζₖ * cₖ₊₁, w̄, y)
+      kaxpy!(m, ζₖ * sₖ₊₁, u, y)
 
       # Compute w̄ₖ₊₁
-      @kaxpby!(m, -cₖ₊₁, u, sₖ₊₁, w̄)
+      kaxpby!(m, -cₖ₊₁, u, sₖ₊₁, w̄)
 
       if σₑₛₜ > 0 && !complex_error_bnd
         if transfer_to_craig
@@ -480,13 +488,27 @@ kwargs_lnlq = (:M, :N, :ldiv, :transfer_to_craig, :sqd, :λ, :σ, :utolx, :utoly
         rNorm_cg = abs(βhatₖ₊₁ * τₖ)
       end
 
-      # Update sₖ, cₖ, αₖ, βₖ, ηₖ, ϵbarₖ, τₖ, ζₖ₋₁ and ζbarₖ.
+      # Update stopping criterion.
+      user_requested_exit = callback(workspace) :: Bool
+      tired = iter ≥ itmax
+      solved_lq = rNorm_lq ≤ ε
+      solved_cg = transfer_to_craig && (abs(ζbarₖ) > eps(T)) && (rNorm_cg ≤ ε)
+      if σₑₛₜ > 0
+        solved_lq = solved_lq || err_x ≤ utolx || err_y ≤ utoly
+        solved_cg = transfer_to_craig && (solved_cg || err_x ≤ utolx || err_y ≤ utoly)
+      end
+      timer = time_ns() - start_time
+      overtimed = timer > timemax_ns
+      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %.2fs\n", iter, rNorm_lq, start_time |> ktimer)
+
+      # Update sₖ, cₖ, αₖ, βₖ, ηₖ, θₖ, ϵbarₖ, τₖ, ζₖ₋₁ and ζbarₖ.
       cₖ    = cₖ₊₁
       sₖ    = sₖ₊₁
       αₖ    = αₖ₊₁
       αhatₖ = αhatₖ₊₁
       βₖ    = βₖ₊₁
       ηₖ    = ηₖ₊₁
+      θₖ    = θₖ₊₁
       ϵbarₖ = ϵbarₖ₊₁
       τₖ    = τₖ₊₁
       ζₖ₋₁  = ζₖ
@@ -498,47 +520,34 @@ kwargs_lnlq = (:M, :N, :ldiv, :transfer_to_craig, :sqd, :λ, :σ, :utolx, :utoly
         spₖ = spₖ₊₁
       end
 
-      # Update stopping criterion.
-      user_requested_exit = callback(solver) :: Bool
-      tired = iter ≥ itmax
-      solved_lq = rNorm_lq ≤ ε
-      solved_cg = transfer_to_craig && rNorm_cg ≤ ε
-      if σₑₛₜ > 0
-        solved_lq = solved_lq || err_x ≤ utolx || err_y ≤ utoly
-        solved_cg = transfer_to_craig && (solved_cg || err_x ≤ utolx || err_y ≤ utoly)
-      end
-      timer = time_ns() - start_time
-      overtimed = timer > timemax_ns
-      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %.2fs\n", iter, rNorm_lq, ktimer(start_time))
-
       # Update iteration index.
       iter = iter + 1
     end
     (verbose > 0) && @printf(iostream, "\n")
 
-    if solved_cg
+    if solved_cg && (ζbarₖ > eps(T))
       if λ > 0
         # (xᶜ)ₖ ← (xᵃᵘˣ)ₖ₋₁ + τₖ * (cpₖvₖ + spₖqₖ₋₁)
-        @kaxpy!(n, τₖ * cpₖ, v, x)
+        kaxpy!(n, τₖ * cpₖ, v, x)
         if iter ≥ 2
-          @kaxpy!(n, τₖ * spₖ, q, x)
+          kaxpy!(n, τₖ * spₖ, q, x)
         end
       else
         # (xᶜ)ₖ ← (xᵃᵘˣ)ₖ₋₁ + τₖ * vₖ
-        @kaxpy!(n, τₖ, v, x)
+        kaxpy!(n, τₖ, v, x)
       end
       # (yᶜ)ₖ ← (yᴸ)ₖ₋₁ + ζbarₖ * w̄ₖ
-      @kaxpy!(m, ζbarₖ, w̄, y)
+      kaxpy!(m, ζbarₖ, w̄, y)
     else
       if λ > 0
         # (xᴸ)ₖ ← (xᵃᵘˣ)ₖ₋₁ + ηₖζₖ₋₁ * (cpₖvₖ + spₖqₖ₋₁)
-        @kaxpy!(n, ηₖ * ζₖ₋₁ * cpₖ, v, x)
+        kaxpy!(n, ηₖ * ζₖ₋₁ * cpₖ, v, x)
         if iter ≥ 2
-          @kaxpy!(n, ηₖ * ζₖ₋₁ * spₖ, q, x)
+          kaxpy!(n, ηₖ * ζₖ₋₁ * spₖ, q, x)
         end
       else
         # (xᴸ)ₖ ← (xᵃᵘˣ)ₖ₋₁ + ηₖζₖ₋₁ * vₖ
-        @kaxpy!(n, ηₖ * ζₖ₋₁, v, x)
+        kaxpy!(n, ηₖ * ζₖ₋₁, v, x)
       end
     end
 
@@ -553,8 +562,8 @@ kwargs_lnlq = (:M, :N, :ldiv, :transfer_to_craig, :sqd, :λ, :σ, :utolx, :utoly
     stats.niter = iter
     stats.solved = solved_lq || solved_cg
     stats.error_with_bnd = complex_error_bnd
-    stats.timer = ktimer(start_time)
+    stats.timer = start_time |> ktimer
     stats.status = status
-    return solver
+    return workspace
   end
 end

@@ -19,7 +19,7 @@ export gpmr, gpmr!
                          reorthogonalization::Bool=false, atol::T=√eps(T),
                          rtol::T=√eps(T), itmax::Int=0,
                          timemax::Float64=Inf, verbose::Int=0, history::Bool=false,
-                         callback=solver->false, iostream::IO=kstdout)
+                         callback=workspace->false, iostream::IO=kstdout)
 
 `T` is an `AbstractFloat` such as `Float32`, `Float64` or `BigFloat`.
 `FC` is `T` or `Complex{T}`.
@@ -36,7 +36,7 @@ GPMR solves the non-Hermitian partitioned linear system
 
 of size (n+m) × (n+m) where λ and μ are real or complex numbers.
 `A` can have any shape and `B` has the shape of `Aᴴ`.
-`A`, `B`, `b` and `c` must be all nonzero.
+`A` and `B` must both be nonzero.
 
 This implementation allows left and right block diagonal preconditioners
 
@@ -58,17 +58,23 @@ The residual norm ‖rₖ‖ is monotonically decreasing in GPMR.
 GPMR stops when `itmax` iterations are reached or when `‖rₖ‖ ≤ atol + ‖r₀‖ * rtol`.
 `atol` is an absolute tolerance and `rtol` is a relative tolerance.
 
+#### Interface
+
+To easily switch between Krylov methods, use the generic interface [`krylov_solve`](@ref) with `method = :gpmr`.
+
+For an in-place variant that reuses memory across solves, see [`gpmr!`](@ref).
+
 #### Input arguments
 
-* `A`: a linear operator that models a matrix of dimension m × n;
-* `B`: a linear operator that models a matrix of dimension n × m;
-* `b`: a vector of length m;
-* `c`: a vector of length n.
+* `A`: a linear operator that models a matrix of dimension `m × n`;
+* `B`: a linear operator that models a matrix of dimension `n × m`;
+* `b`: a vector of length `m`;
+* `c`: a vector of length `n`.
 
 #### Optional arguments
 
-* `x0`: a vector of length m that represents an initial guess of the solution x;
-* `y0`: a vector of length n that represents an initial guess of the solution y.
+* `x0`: a vector of length `m` that represents an initial guess of the solution `x`;
+* `y0`: a vector of length `n` that represents an initial guess of the solution `y`.
 
 #### Keyword arguments
 
@@ -87,13 +93,13 @@ GPMR stops when `itmax` iterations are reached or when `‖rₖ‖ ≤ atol + �
 * `timemax`: the time limit in seconds;
 * `verbose`: additional details can be displayed if verbose mode is enabled (verbose > 0). Information will be displayed every `verbose` iterations;
 * `history`: collect additional statistics on the run such as residual norms, or Aᴴ-residual norms;
-* `callback`: function or functor called as `callback(solver)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
+* `callback`: function or functor called as `callback(workspace)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
 * `iostream`: stream to which output is logged.
 
 #### Output arguments
 
-* `x`: a dense vector of length m;
-* `y`: a dense vector of length n;
+* `x`: a dense vector of length `m`;
+* `y`: a dense vector of length `n`;
 * `stats`: statistics collected on the run in a [`SimpleStats`](@ref) structure.
 
 #### Reference
@@ -103,15 +109,18 @@ GPMR stops when `itmax` iterations are reached or when `‖rₖ‖ ≤ atol + �
 function gpmr end
 
 """
-    solver = gpmr!(solver::GpmrSolver, A, B, b, c; kwargs...)
-    solver = gpmr!(solver::GpmrSolver, A, B, b, c, x0, y0; kwargs...)
+    workspace = gpmr!(workspace::GpmrWorkspace, A, B, b, c; kwargs...)
+    workspace = gpmr!(workspace::GpmrWorkspace, A, B, b, c, x0, y0; kwargs...)
 
-where `kwargs` are keyword arguments of [`gpmr`](@ref).
+In these calls, `kwargs` are keyword arguments of [`gpmr`](@ref).
+The keyword argument `memory` is the only exception.
+It is only supported by [`gpmr`](@ref) and is required to create a `GpmrWorkspace`.
+It cannot be changed later.
 
-Note that the `memory` keyword argument is the only exception.
-It's required to create a `GpmrSolver` and can't be changed later.
+See [`GpmrWorkspace`](@ref) for instructions on how to create the `workspace`.
 
-See [`GpmrSolver`](@ref) for more details about the `solver`.
+For a more generic interface, you can use [`krylov_workspace`](@ref) with `method = :gpmr` to allocate the workspace,
+and [`krylov_solve!`](@ref) to run the Krylov method in-place.
 """
 function gpmr! end
 
@@ -138,38 +147,21 @@ def_kwargs_gpmr = (:(; C = I                            ),
                    :(; timemax::Float64 = Inf           ),
                    :(; verbose::Int = 0                 ),
                    :(; history::Bool = false            ),
-                   :(; callback = solver -> false       ),
+                   :(; callback = workspace -> false    ),
                    :(; iostream::IO = kstdout           ))
 
-def_kwargs_gpmr = mapreduce(extract_parameters, vcat, def_kwargs_gpmr)
+def_kwargs_workspace_gpmr = (:(; memory::Int = 20),)
+
+def_kwargs_gpmr = extract_parameters.(def_kwargs_gpmr)
+def_kwargs_workspace_gpmr = extract_parameters.(def_kwargs_workspace_gpmr)
 
 args_gpmr = (:A, :B, :b, :c)
 optargs_gpmr = (:x0, :y0)
 kwargs_gpmr = (:C, :D, :E, :F, :ldiv, :gsp, :λ, :μ, :reorthogonalization, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback, :iostream)
+kwargs_workspace_gpmr = (:memory,)
 
 @eval begin
-  function gpmr($(def_args_gpmr...), $(def_optargs_gpmr...); memory :: Int=20, $(def_kwargs_gpmr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = GpmrSolver(A, b, memory)
-    warm_start!(solver, $(optargs_gpmr...))
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    gpmr!(solver, $(args_gpmr...); $(kwargs_gpmr...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.y, solver.stats)
-  end
-
-  function gpmr($(def_args_gpmr...); memory :: Int=20, $(def_kwargs_gpmr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = GpmrSolver(A, b, memory)
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    gpmr!(solver, $(args_gpmr...); $(kwargs_gpmr...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.y, solver.stats)
-  end
-
-  function gpmr!(solver :: GpmrSolver{T,FC,S}, $(def_args_gpmr...); $(def_kwargs_gpmr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
+  function gpmr!(workspace :: GpmrWorkspace{T,FC,Sm,Sn}, $(def_args_gpmr...); $(def_kwargs_gpmr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, Sm <: AbstractVector{FC}, Sn <: AbstractVector{FC}}
 
     # Timer
     start_time = time_ns()
@@ -177,7 +169,7 @@ kwargs_gpmr = (:C, :D, :E, :F, :ldiv, :gsp, :λ, :μ, :reorthogonalization, :ato
 
     m, n = size(A)
     s, t = size(B)
-    (m == solver.m && n == solver.n) || error("(solver.m, solver.n) = ($(solver.m), $(solver.n)) is inconsistent with size(A) = ($m, $n)")
+    (m == workspace.m && n == workspace.n) || error("(workspace.m, workspace.n) = ($(workspace.m), $(workspace.n)) is inconsistent with size(A) = ($m, $n)")
     m == t         || error("Inconsistent problem size")
     s == n         || error("Inconsistent problem size")
     length(b) == m || error("Inconsistent problem size")
@@ -193,34 +185,34 @@ kwargs_gpmr = (:C, :D, :E, :F, :ldiv, :gsp, :λ, :μ, :reorthogonalization, :ato
     # Check type consistency
     eltype(A) == FC || @warn "eltype(A) ≠ $FC. This could lead to errors or additional allocations in operator-vector products."
     eltype(B) == FC || @warn "eltype(B) ≠ $FC. This could lead to errors or additional allocations in operator-vector products."
-    ktypeof(b) <: S || error("ktypeof(b) is not a subtype of $S")
-    ktypeof(c) <: S || error("ktypeof(c) is not a subtype of $S")
+    ktypeof(b) == Sm || error("ktypeof(b) must be equal to $Sm")
+    ktypeof(c) == Sn || error("ktypeof(c) must be equal to $Sn")
 
     # Determine λ and μ associated to generalized saddle point systems.
     gsp && (λ = one(FC) ; μ = zero(FC))
 
-    warm_start = solver.warm_start
+    warm_start = workspace.warm_start
     warm_start && (λ ≠ 0) && !EisI && error("Warm-start with right preconditioners is not supported.")
     warm_start && (μ ≠ 0) && !FisI && error("Warm-start with right preconditioners is not supported.")
 
     # Set up workspace.
-    allocate_if(!CisI, solver, :q , S, m)
-    allocate_if(!DisI, solver, :p , S, n)
-    allocate_if(!EisI, solver, :wB, S, m)
-    allocate_if(!FisI, solver, :wA, S, n)
-    wA, wB, dA, dB, Δx, Δy = solver.wA, solver.wB, solver.dA, solver.dB, solver.Δx, solver.Δy
-    x, y, V, U, gs, gc = solver.x, solver.y, solver.V, solver.U, solver.gs, solver.gc
-    zt, R, stats = solver.zt, solver.R, solver.stats
+    allocate_if(!CisI, workspace, :q , Sm, workspace.x)  # The length of q is m
+    allocate_if(!DisI, workspace, :p , Sn, workspace.y)  # The length of p is n
+    allocate_if(!EisI, workspace, :wB, Sm, workspace.x)  # The length of wB is m
+    allocate_if(!FisI, workspace, :wA, Sn, workspace.y)  # The length of wA is n
+    wA, wB, dA, dB, Δx, Δy = workspace.wA, workspace.wB, workspace.dA, workspace.dB, workspace.Δx, workspace.Δy
+    x, y, V, U, gs, gc = workspace.x, workspace.y, workspace.V, workspace.U, workspace.gs, workspace.gc
+    zt, R, stats = workspace.zt, workspace.R, workspace.stats
     rNorms = stats.residuals
     reset!(stats)
     b₀ = warm_start ? dA : b
     c₀ = warm_start ? dB : c
-    q  = CisI ? dA : solver.q
-    p  = DisI ? dB : solver.p
+    q  = CisI ? dA : workspace.q
+    p  = DisI ? dB : workspace.p
 
     # Initial solutions x₀ and y₀.
-    x .= zero(FC)
-    y .= zero(FC)
+    kfill!(x, zero(FC))
+    kfill!(y, zero(FC))
 
     iter = 0
     itmax == 0 && (itmax = m+n)
@@ -229,44 +221,48 @@ kwargs_gpmr = (:C, :D, :E, :F, :ldiv, :gsp, :λ, :μ, :reorthogonalization, :ato
     nr = 0           # Number of coefficients stored in Rₖ
     mem = length(V)  # Memory
     ωₖ = zero(FC)    # Auxiliary variable to store fₖₖ
-    for i = 1 : mem
-      V[i] .= zero(FC)
-      U[i] .= zero(FC)
-    end
-    gs .= zero(FC)  # Givens sines used for the factorization QₖRₖ = Sₖ₊₁.ₖ.
-    gc .= zero(T)   # Givens cosines used for the factorization QₖRₖ = Sₖ₊₁.ₖ.
-    R  .= zero(FC)  # Upper triangular matrix Rₖ.
-    zt .= zero(FC)  # Rₖzₖ = tₖ with (tₖ, τbar₂ₖ₊₁, τbar₂ₖ₊₂) = (Qₖ)ᴴ(βe₁ + γe₂).
+    kfill!(gs, zero(FC))  # Givens sines used for the factorization QₖRₖ = Sₖ₊₁.ₖ.
+    kfill!(gc, zero(T))   # Givens cosines used for the factorization QₖRₖ = Sₖ₊₁.ₖ.
+    kfill!(R , zero(FC))  # Upper triangular matrix Rₖ.
+    kfill!(zt, zero(FC))  # Rₖzₖ = tₖ with (tₖ, τbar₂ₖ₊₁, τbar₂ₖ₊₂) = (Qₖ)ᴴ(βe₁ + γe₂).
 
     # Warm-start
     # If λ ≠ 0, Cb₀ = Cb - CAΔy - λΔx because CM = Iₘ and E = Iₘ
     # E ≠ Iₘ is only allowed when λ = 0 because E⁻¹Δx can't be computed to use CME = Iₘ
     # Compute C(b - AΔy) - λΔx
-    warm_start && mul!(b₀, A, Δy)
-    warm_start && @kaxpby!(m, one(FC), b, -one(FC), b₀)
+    warm_start && kmul!(b₀, A, Δy)
+    warm_start && kaxpby!(m, one(FC), b, -one(FC), b₀)
     !CisI && mulorldiv!(q, C, b₀, ldiv)
     !CisI && (b₀ = q)
-    warm_start && (λ ≠ 0) && @kaxpy!(m, -λ, Δx, b₀)
+    warm_start && (λ ≠ 0) && kaxpy!(m, -λ, Δx, b₀)
 
     # If μ ≠ 0, Dc₀ = Dc - DBΔx - μΔy because DN = Iₙ and F = Iₙ
     # F ≠ Iₙ is only allowed when μ = 0 because F⁻¹Δy can't be computed to use DNF = Iₘ
     # Compute D(c - BΔx) - μΔy
-    warm_start && mul!(c₀, B, Δx)
-    warm_start && @kaxpby!(n, one(FC), c, -one(FC), c₀)
+    warm_start && kmul!(c₀, B, Δx)
+    warm_start && kaxpby!(n, one(FC), c, -one(FC), c₀)
     !DisI && mulorldiv!(p, D, c₀, ldiv)
     !DisI && (c₀ = p)
-    warm_start && (μ ≠ 0) && @kaxpy!(n, -μ, Δy, c₀)
+    warm_start && (μ ≠ 0) && kaxpy!(n, -μ, Δy, c₀)
 
     # Initialize the orthogonal Hessenberg reduction process.
     # βv₁ = Cb
-    β = @knrm2(m, b₀)
-    β ≠ 0 || error("b must be nonzero")
-    @. V[1] = b₀ / β
+    β = knorm(m, b₀)
+    if β ≠ 0
+      kdivcopy!(m, V[1], b₀, β)
+    else
+      # β = ‖b₀‖₂ = 0
+      kfill!(V[1], zero(FC))  # v₁ = 0 such that v₁ ⊥ Span{v₁, ..., vₖ}
+    end
 
     # γu₁ = Dc
-    γ = @knrm2(n, c₀)
-    γ ≠ 0 || error("c must be nonzero")
-    @. U[1] = c₀ / γ
+    γ = knorm(n, c₀)
+    if γ ≠ 0
+      kdivcopy!(n, U[1], c₀, γ)
+    else
+      # γ = ‖c₀‖₂ = 0
+      kfill!(U[1], zero(FC))  # u₁ = 0 such that u₁ ⊥ Span{u₁, ..., uₖ}
+    end
 
     # Compute ‖r₀‖² = γ² + β²
     rNorm = sqrt(γ^2 + β^2)
@@ -278,10 +274,10 @@ kwargs_gpmr = (:C, :D, :E, :F, :ldiv, :gsp, :λ, :μ, :reorthogonalization, :ato
     zt[2] = γ
 
     (verbose > 0) && @printf(iostream, "%5s  %7s  %7s  %7s  %5s\n", "k", "‖rₖ‖", "hₖ₊₁.ₖ", "fₖ₊₁.ₖ", "timer")
-    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7s  %7s  %.2fs\n", iter, rNorm, "✗ ✗ ✗ ✗", "✗ ✗ ✗ ✗", ktimer(start_time))
+    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7s  %7s  %.2fs\n", iter, rNorm, "✗ ✗ ✗ ✗", "✗ ✗ ✗ ✗", start_time |> ktimer)
 
     # Tolerance for breakdown detection.
-    btol = eps(T)^(3/4)
+    btol = eps(T)^(3//4)
 
     # Stopping criterion.
     breakdown = false
@@ -302,6 +298,7 @@ kwargs_gpmr = (:C, :D, :E, :F, :ldiv, :gsp, :λ, :μ, :reorthogonalization, :ato
 
       # Update workspace if more storage is required
       if iter > mem
+        start_allocation_time = time_ns()
         for i = 1 : 4k-1
           push!(R, zero(FC))
         end
@@ -309,25 +306,26 @@ kwargs_gpmr = (:C, :D, :E, :F, :ldiv, :gsp, :λ, :μ, :reorthogonalization, :ato
           push!(gs, zero(FC))
           push!(gc, zero(T))
         end
+        stats.allocation_timer += start_allocation_time |> ktimer
       end
 
       # Continue the orthogonal Hessenberg reduction process.
       # CAFUₖ = VₖHₖ + hₖ₊₁.ₖ * vₖ₊₁(eₖ)ᵀ = Vₖ₊₁Hₖ₊₁.ₖ
       # DBEVₖ = UₖFₖ + fₖ₊₁.ₖ * uₖ₊₁(eₖ)ᵀ = Uₖ₊₁Fₖ₊₁.ₖ
-      wA = FisI ? U[iter] : solver.wA
-      wB = EisI ? V[iter] : solver.wB
+      wA = FisI ? U[iter] : workspace.wA
+      wB = EisI ? V[iter] : workspace.wB
       FisI || mulorldiv!(wA, F, U[iter], ldiv)  # wA = Fuₖ
       EisI || mulorldiv!(wB, E, V[iter], ldiv)  # wB = Evₖ
-      mul!(dA, A, wA)                           # dA = AFuₖ
-      mul!(dB, B, wB)                           # dB = BEvₖ
+      kmul!(dA, A, wA)                          # dA = AFuₖ
+      kmul!(dB, B, wB)                          # dB = BEvₖ
       CisI || mulorldiv!(q, C, dA, ldiv)        # q  = CAFuₖ
       DisI || mulorldiv!(p, D, dB, ldiv)        # p  = DBEvₖ
 
       for i = 1 : iter
-        hᵢₖ = @kdot(m, V[i], q)    # hᵢ.ₖ = (vᵢ)ᴴq
-        fᵢₖ = @kdot(n, U[i], p)    # fᵢ.ₖ = (uᵢ)ᴴp
-        @kaxpy!(m, -hᵢₖ, V[i], q)  # q ← q - hᵢ.ₖvᵢ
-        @kaxpy!(n, -fᵢₖ, U[i], p)  # p ← p - fᵢ.ₖuᵢ
+        hᵢₖ = kdot(m, V[i], q)    # hᵢ.ₖ = (vᵢ)ᴴq
+        fᵢₖ = kdot(n, U[i], p)    # fᵢ.ₖ = (uᵢ)ᴴp
+        kaxpy!(m, -hᵢₖ, V[i], q)  # q ← q - hᵢ.ₖvᵢ
+        kaxpy!(n, -fᵢₖ, U[i], p)  # p ← p - fᵢ.ₖuᵢ
         R[nr₂ₖ + 2i-1] = hᵢₖ
         (i < iter) ? R[nr₂ₖ₋₁ + 2i] = fᵢₖ : ωₖ = fᵢₖ
       end
@@ -335,17 +333,17 @@ kwargs_gpmr = (:C, :D, :E, :F, :ldiv, :gsp, :λ, :μ, :reorthogonalization, :ato
       # Reorthogonalization of the Krylov basis.
       if reorthogonalization
         for i = 1 : iter
-          Htmp = @kdot(m, V[i], q)    # hₜₘₚ = (vᵢ)ᴴq
-          Ftmp = @kdot(n, U[i], p)    # fₜₘₚ = (uᵢ)ᴴp
-          @kaxpy!(m, -Htmp, V[i], q)  # q ← q - hₜₘₚvᵢ
-          @kaxpy!(n, -Ftmp, U[i], p)  # p ← p - fₜₘₚuᵢ
+          Htmp = kdot(m, V[i], q)    # hₜₘₚ = (vᵢ)ᴴq
+          Ftmp = kdot(n, U[i], p)    # fₜₘₚ = (uᵢ)ᴴp
+          kaxpy!(m, -Htmp, V[i], q)  # q ← q - hₜₘₚvᵢ
+          kaxpy!(n, -Ftmp, U[i], p)  # p ← p - fₜₘₚuᵢ
           R[nr₂ₖ + 2i-1] += Htmp                            # hᵢ.ₖ = hᵢ.ₖ + hₜₘₚ
           (i < iter) ? R[nr₂ₖ₋₁ + 2i] += Ftmp : ωₖ += Ftmp  # fᵢ.ₖ = fᵢ.ₖ + fₜₘₚ
         end
       end
 
-      Haux = @knrm2(m, q)   # hₖ₊₁.ₖ = ‖q‖₂
-      Faux = @knrm2(n, p)   # fₖ₊₁.ₖ = ‖p‖₂
+      Haux = knorm(m, q)   # hₖ₊₁.ₖ = ‖q‖₂
+      Faux = knorm(n, p)   # fₖ₊₁.ₖ = ‖p‖₂
 
       # Add regularization terms.
       R[nr₂ₖ₋₁ + 2k-1] = λ  # S₂ₖ₋₁.₂ₖ₋₁ = λ
@@ -455,42 +453,40 @@ kwargs_gpmr = (:C, :D, :E, :F, :ldiv, :gsp, :λ, :μ, :reorthogonalization, :ato
       # Update the number of coefficients in Rₖ.
       nr = nr + 4k-1
 
-      # Stopping conditions that do not depend on user input.
-      # This is to guard against tolerances that are unreasonably small.
-      resid_decrease_mach = (rNorm + one(T) ≤ one(T))
-
       # Update stopping criterion.
-      user_requested_exit = callback(solver) :: Bool
+      user_requested_exit = callback(workspace) :: Bool
       resid_decrease_lim = rNorm ≤ ε
       breakdown = Faux ≤ btol && Haux ≤ btol
-      solved = resid_decrease_lim || resid_decrease_mach
+      solved = resid_decrease_lim
       tired = iter ≥ itmax
       timer = time_ns() - start_time
       overtimed = timer > timemax_ns
-      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %.2fs\n", iter, rNorm, Haux, Faux, ktimer(start_time))
+      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %.2fs\n", iter, rNorm, Haux, Faux, start_time |> ktimer)
 
       # Compute vₖ₊₁ and uₖ₊₁
       if !(solved || tired || breakdown || user_requested_exit || overtimed)
         if iter ≥ mem
-          push!(V, S(undef, m))
-          push!(U, S(undef, n))
+          start_allocation_time = time_ns()
+          push!(V, similar(workspace.x))
+          push!(U, similar(workspace.y))
           push!(zt, zero(FC), zero(FC))
+          stats.allocation_timer += start_allocation_time |> ktimer
         end
 
         # hₖ₊₁.ₖ ≠ 0
         if Haux > btol
-          @. V[k+1] = q / Haux  # hₖ₊₁.ₖvₖ₊₁ = q
+          kdivcopy!(m, V[k+1], q, Haux)  # vₖ₊₁ = q / hₖ₊₁.ₖ
         else
           # Breakdown -- hₖ₊₁.ₖ = ‖q‖₂ = 0 and Auₖ ∈ Span{v₁, ..., vₖ}
-          V[k+1] .= zero(FC)  # vₖ₊₁ = 0 such that vₖ₊₁ ⊥ Span{v₁, ..., vₖ}
+          kfill!(V[k+1], zero(FC))  # vₖ₊₁ = 0 such that vₖ₊₁ ⊥ Span{v₁, ..., vₖ}
         end
 
         # fₖ₊₁.ₖ ≠ 0
         if Faux > btol
-          @. U[k+1] = p / Faux  # fₖ₊₁.ₖuₖ₊₁ = p
+          kdivcopy!(n, U[k+1], p, Faux)  # fₖ₊₁.ₖuₖ₊₁ = p
         else
           # Breakdown -- fₖ₊₁.ₖ = ‖p‖₂ = 0 and Bvₖ ∈ Span{u₁, ..., uₖ}
-          U[k+1] .= zero(FC)  # uₖ₊₁ = 0 such that uₖ₊₁ ⊥ Span{u₁, ..., uₖ}
+          kfill!(U[k+1], zero(FC))  # uₖ₊₁ = 0 such that uₖ₊₁ ⊥ Span{u₁, ..., uₖ}
         end
 
         zt[2k+1] = τbar₂ₖ₊₁
@@ -517,20 +513,20 @@ kwargs_gpmr = (:C, :D, :E, :F, :ldiv, :gsp, :λ, :μ, :reorthogonalization, :ato
 
     # Compute xₖ and yₖ
     for i = 1 : iter
-      @kaxpy!(m, zt[2i-1], V[i], x)  # xₖ = ζ₁v₁ + ζ₃v₂ + ••• + ζ₂ₖ₋₁vₖ
-      @kaxpy!(n, zt[2i]  , U[i], y)  # xₖ = ζ₂u₁ + ζ₄u₂ + ••• + ζ₂ₖuₖ
+      kaxpy!(m, zt[2i-1], V[i], x)  # xₖ = ζ₁v₁ + ζ₃v₂ + ••• + ζ₂ₖ₋₁vₖ
+      kaxpy!(n, zt[2i]  , U[i], y)  # xₖ = ζ₂u₁ + ζ₄u₂ + ••• + ζ₂ₖuₖ
     end
     if !EisI
-      wB .= x
+      kcopy!(m, wB, x)  # wB ← x
       mulorldiv!(x, E, wB, ldiv)
     end
     if !FisI
-      wA .= y
+      kcopy!(n, wA, y)  # wA ← y
       mulorldiv!(y, F, wA, ldiv)
     end
-    warm_start && @kaxpy!(m, one(FC), Δx, x)
-    warm_start && @kaxpy!(n, one(FC), Δy, y)
-    solver.warm_start = false
+    warm_start && kaxpy!(m, one(FC), Δx, x)
+    warm_start && kaxpy!(n, one(FC), Δy, y)
+    workspace.warm_start = false
 
     # Termination status
     tired               && (status = "maximum number of iterations exceeded")
@@ -543,8 +539,8 @@ kwargs_gpmr = (:C, :D, :E, :F, :ldiv, :gsp, :λ, :μ, :reorthogonalization, :ato
     stats.niter = iter
     stats.solved = solved
     stats.inconsistent = inconsistent
-    stats.timer = ktimer(start_time)
+    stats.timer = start_time |> ktimer
     stats.status = status
-    return solver
+    return workspace
   end
 end

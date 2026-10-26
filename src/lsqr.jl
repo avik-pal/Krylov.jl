@@ -33,7 +33,7 @@ export lsqr, lsqr!
                       conlim::T=1/√eps(T), atol::T=zero(T),
                       rtol::T=zero(T), itmax::Int=0,
                       timemax::Float64=Inf, verbose::Int=0, history::Bool=false,
-                      callback=solver->false, iostream::IO=kstdout)
+                      callback=workspace->false, iostream::IO=kstdout)
 
 `T` is an `AbstractFloat` such as `Float32`, `Float64` or `BigFloat`.
 `FC` is `T` or `Complex{T}`.
@@ -80,10 +80,16 @@ The system above represents the optimality conditions of
 In this case, `N` can still be specified and indicates the weighted norm in which `x` and `Aᴴr` should be measured.
 `r` can be recovered by computing `E⁻¹(b - Ax)`.
 
+#### Interface
+
+To easily switch between Krylov methods, use the generic interface [`krylov_solve`](@ref) with `method = :lsqr`.
+
+For an in-place variant that reuses memory across solves, see [`lsqr!`](@ref).
+
 #### Input arguments
 
-* `A`: a linear operator that models a matrix of dimension m × n;
-* `b`: a vector of length m.
+* `A`: a linear operator that models a matrix of dimension `m × n`;
+* `b`: a vector of length `m`.
 
 #### Keyword arguments
 
@@ -104,12 +110,12 @@ In this case, `N` can still be specified and indicates the weighted norm in whic
 * `timemax`: the time limit in seconds;
 * `verbose`: additional details can be displayed if verbose mode is enabled (verbose > 0). Information will be displayed every `verbose` iterations;
 * `history`: collect additional statistics on the run such as residual norms, or Aᴴ-residual norms;
-* `callback`: function or functor called as `callback(solver)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
+* `callback`: function or functor called as `callback(workspace)` that returns `true` if the Krylov method should terminate, and `false` otherwise;
 * `iostream`: stream to which output is logged.
 
 #### Output arguments
 
-* `x`: a dense vector of length n;
+* `x`: a dense vector of length `n`;
 * `stats`: statistics collected on the run in a [`SimpleStats`](@ref) structure.
 
 #### Reference
@@ -119,60 +125,60 @@ In this case, `N` can still be specified and indicates the weighted norm in whic
 function lsqr end
 
 """
-    solver = lsqr!(solver::LsqrSolver, A, b; kwargs...)
+    workspace = lsqr!(workspace::LsqrWorkspace, A, b; kwargs...)
 
-where `kwargs` are keyword arguments of [`lsqr`](@ref).
+In this call, `kwargs` are keyword arguments of [`lsqr`](@ref).
+The keyword argument `window` is the only exception.
+It is only supported by [`lsqr`](@ref) and is required to create a `LsqrWorkspace`.
+It cannot be changed later.
 
-See [`LsqrSolver`](@ref) for more details about the `solver`.
+See [`LsqrWorkspace`](@ref) for instructions on how to create the `workspace`.
+
+For a more generic interface, you can use [`krylov_workspace`](@ref) with `method = :lsqr` to allocate the workspace,
+and [`krylov_solve!`](@ref) to run the Krylov method in-place.
 """
 function lsqr! end
 
 def_args_lsqr = (:(A                    ),
                  :(b::AbstractVector{FC}))
 
-def_kwargs_lsqr = (:(; M = I                     ),
-                   :(; N = I                     ),
-                   :(; ldiv::Bool = false        ),
-                   :(; sqd::Bool = false         ),
-                   :(; λ::T = zero(T)            ),
-                   :(; radius::T = zero(T)       ),
-                   :(; etol::T = √eps(T)         ),
-                   :(; axtol::T = √eps(T)        ),
-                   :(; btol::T = √eps(T)         ),
-                   :(; conlim::T = 1/√eps(T)     ),
-                   :(; atol::T = zero(T)         ),
-                   :(; rtol::T = zero(T)         ),
-                   :(; itmax::Int = 0            ),
-                   :(; timemax::Float64 = Inf    ),
-                   :(; verbose::Int = 0          ),
-                   :(; history::Bool = false     ),
-                   :(; callback = solver -> false),
-                   :(; iostream::IO = kstdout    ))
+def_kwargs_lsqr = (:(; M = I                        ),
+                   :(; N = I                        ),
+                   :(; ldiv::Bool = false           ),
+                   :(; sqd::Bool = false            ),
+                   :(; λ::T = zero(T)               ),
+                   :(; radius::T = zero(T)          ),
+                   :(; etol::T = √eps(T)            ),
+                   :(; axtol::T = √eps(T)           ),
+                   :(; btol::T = √eps(T)            ),
+                   :(; conlim::T = 1/√eps(T)        ),
+                   :(; atol::T = zero(T)            ),
+                   :(; rtol::T = zero(T)            ),
+                   :(; itmax::Int = 0               ),
+                   :(; timemax::Float64 = Inf       ),
+                   :(; verbose::Int = 0             ),
+                   :(; history::Bool = false        ),
+                   :(; callback = workspace -> false),
+                   :(; iostream::IO = kstdout       ))
 
-def_kwargs_lsqr = mapreduce(extract_parameters, vcat, def_kwargs_lsqr)
+def_kwargs_workspace_lsqr = (:(; window::Int = 5),)
+
+def_kwargs_lsqr = extract_parameters.(def_kwargs_lsqr)
+def_kwargs_workspace_lsqr = extract_parameters.(def_kwargs_workspace_lsqr)
 
 args_lsqr = (:A, :b)
 kwargs_lsqr = (:M, :N, :ldiv, :sqd, :λ, :radius, :etol, :axtol, :btol, :conlim, :atol, :rtol, :itmax, :timemax, :verbose, :history, :callback, :iostream)
+kwargs_workspace_lsqr = (:window,)
 
 @eval begin
-  function lsqr($(def_args_lsqr...); window :: Int=5, $(def_kwargs_lsqr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}}
-    start_time = time_ns()
-    solver = LsqrSolver(A, b; window)
-    elapsed_time = ktimer(start_time)
-    timemax -= elapsed_time
-    lsqr!(solver, $(args_lsqr...); $(kwargs_lsqr...))
-    solver.stats.timer += elapsed_time
-    return (solver.x, solver.stats)
-  end
-
-  function lsqr!(solver :: LsqrSolver{T,FC,S}, $(def_args_lsqr...); $(def_kwargs_lsqr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, S <: AbstractVector{FC}}
+  function lsqr!(workspace :: LsqrWorkspace{T,FC,Sm,Sn}, $(def_args_lsqr...); $(def_kwargs_lsqr...)) where {T <: AbstractFloat, FC <: FloatOrComplex{T}, Sm <: AbstractVector{FC}, Sn <: AbstractVector{FC}}
 
     # Timer
     start_time = time_ns()
     timemax_ns = 1e9 * timemax
 
     m, n = size(A)
-    (m == solver.m && n == solver.n) || error("(solver.m, solver.n) = ($(solver.m), $(solver.n)) is inconsistent with size(A) = ($m, $n)")
+    (m == workspace.m && n == workspace.n) || error("(workspace.m, workspace.n) = ($(workspace.m), $(workspace.n)) is inconsistent with size(A) = ($m, $n)")
     length(b) == m || error("Inconsistent problem size")
     (verbose > 0) && @printf(iostream, "LSQR: system of %d equations in %d variables\n", m, n)
 
@@ -186,47 +192,47 @@ kwargs_lsqr = (:M, :N, :ldiv, :sqd, :λ, :radius, :etol, :axtol, :btol, :conlim,
 
     # Check type consistency
     eltype(A) == FC || @warn "eltype(A) ≠ $FC. This could lead to errors or additional allocations in operator-vector products."
-    ktypeof(b) <: S || error("ktypeof(b) is not a subtype of $S")
+    ktypeof(b) == Sm || error("ktypeof(b) must be equal to $Sm")
 
     # Compute the adjoint of A
     Aᴴ = A'
 
     # Set up workspace.
-    allocate_if(!MisI, solver, :u, S, m)
-    allocate_if(!NisI, solver, :v, S, n)
-    x, Nv, Aᴴu, w = solver.x, solver.Nv, solver.Aᴴu, solver.w
-    Mu, Av, err_vec, stats = solver.Mu, solver.Av, solver.err_vec, solver.stats
+    allocate_if(!MisI, workspace, :u, Sm, workspace.Av)  # The length of u is m
+    allocate_if(!NisI, workspace, :v, Sn, workspace.x)   # The length of v is n
+    x, Nv, Aᴴu, w = workspace.x, workspace.Nv, workspace.Aᴴu, workspace.w
+    Mu, Av, err_vec, stats = workspace.Mu, workspace.Av, workspace.err_vec, workspace.stats
     rNorms, ArNorms = stats.residuals, stats.Aresiduals
     reset!(stats)
-    u = MisI ? Mu : solver.u
-    v = NisI ? Nv : solver.v
+    u = MisI ? Mu : workspace.u
+    v = NisI ? Nv : workspace.v
 
     λ² = λ * λ
     ctol = conlim > 0 ? 1/conlim : zero(T)
-    x .= zero(FC)
+    kfill!(x, zero(FC))
 
     # Initialize Golub-Kahan process.
     # β₁ M u₁ = b.
-    Mu .= b
+    kcopy!(m, Mu, b)  # Mu ← b
     MisI || mulorldiv!(u, M, Mu, ldiv)
-    β₁ = sqrt(@kdotr(m, u, Mu))
+    β₁ = knorm_elliptic(m, u, Mu)
     if β₁ == 0
       stats.niter = 0
       stats.solved, stats.inconsistent = true, false
-      stats.timer = ktimer(start_time)
-      stats.status = "x = 0 is a zero-residual solution"
+      stats.timer = start_time |> ktimer
+      stats.status = "x is a zero-residual solution"
       history && push!(rNorms, zero(T))
       history && push!(ArNorms, zero(T))
-      return solver
+      return workspace
     end
     β = β₁
 
-    @kscal!(m, one(FC)/β₁, u)
-    MisI || @kscal!(m, one(FC)/β₁, Mu)
-    mul!(Aᴴu, Aᴴ, u)
-    Nv .= Aᴴu
+    kdiv!(m, u, β₁)
+    MisI || kdiv!(m, Mu, β₁)
+    kmul!(Aᴴu, Aᴴ, u)
+    kcopy!(n, Nv, Aᴴu)  # Nv ← Aᴴu
     NisI || mulorldiv!(v, N, Nv, ldiv)
-    Anorm² = @kdotr(n, v, Nv)
+    Anorm² = kdotr(n, v, Nv)
     Anorm = sqrt(Anorm²)
     α = Anorm
     Acond  = zero(T)
@@ -240,13 +246,13 @@ kwargs_lsqr = (:M, :N, :ldiv, :sqd, :λ, :radius, :etol, :axtol, :btol, :conlim,
     xENorm² = zero(T)
     err_lbnd = zero(T)
     window = length(err_vec)
-    err_vec .= zero(T)
+    kfill!(err_vec, zero(T))
 
     iter = 0
     itmax == 0 && (itmax = m + n)
 
     (verbose > 0) && @printf(iostream, "%5s  %7s  %7s  %7s  %7s  %7s  %7s  %7s  %7s  %5s\n", "k", "α", "β", "‖r‖", "‖Aᴴr‖", "compat", "backwrd", "‖A‖", "κ(A)", "timer")
-    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %7.1e  %7.1e  %7.1e  %7.1e  %7.1e  %.2fs\n", iter, β₁, α, β₁, α, 0, 1, Anorm, Acond, ktimer(start_time))
+    kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %7.1e  %7.1e  %7.1e  %7.1e  %7.1e  %.2fs\n", iter, β₁, α, β₁, α, 0, 1, Anorm, Acond, start_time |> ktimer)
 
     rNorm = β₁
     r1Norm = rNorm
@@ -259,13 +265,13 @@ kwargs_lsqr = (:M, :N, :ldiv, :sqd, :λ, :radius, :etol, :axtol, :btol, :conlim,
     if α == 0
       stats.niter = 0
       stats.solved, stats.inconsistent = true, false
-      stats.timer = ktimer(start_time)
-      stats.status = "x = 0 is a minimum least-squares solution"
-      return solver
+      stats.timer = start_time |> ktimer
+      stats.status = "x is a minimum least-squares solution"
+      return workspace
     end
-    @kscal!(n, one(FC)/α, v)
-    NisI || @kscal!(n, one(FC)/α, Nv)
-    w .= v
+    kdiv!(n, v, α)
+    NisI || kdiv!(n, Nv, α)
+    kcopy!(n, w, v)  # w ← v
 
     # Initialize other constants.
     ϕbar = β₁
@@ -290,24 +296,24 @@ kwargs_lsqr = (:M, :N, :ldiv, :sqd, :λ, :radius, :etol, :axtol, :btol, :conlim,
 
       # Generate next Golub-Kahan vectors.
       # 1. βₖ₊₁Muₖ₊₁ = Avₖ - αₖMuₖ
-      mul!(Av, A, v)
-      @kaxpby!(m, one(FC), Av, -α, Mu)
+      kmul!(Av, A, v)
+      kaxpby!(m, one(FC), Av, -α, Mu)
       MisI || mulorldiv!(u, M, Mu, ldiv)
-      β = sqrt(@kdotr(m, u, Mu))
+      β = knorm_elliptic(m, u, Mu)
       if β ≠ 0
-        @kscal!(m, one(FC)/β, u)
-        MisI || @kscal!(m, one(FC)/β, Mu)
+        kdiv!(m, u, β)
+        MisI || kdiv!(m, Mu, β)
         Anorm² = Anorm² + α * α + β * β  # = ‖B_{k-1}‖²
         λ > 0 && (Anorm² += λ²)
 
         # 2. αₖ₊₁Nvₖ₊₁ = Aᴴuₖ₊₁ - βₖ₊₁Nvₖ
-        mul!(Aᴴu, Aᴴ, u)
-        @kaxpby!(n, one(FC), Aᴴu, -β, Nv)
+        kmul!(Aᴴu, Aᴴ, u)
+        kaxpby!(n, one(FC), Aᴴu, -β, Nv)
         NisI || mulorldiv!(v, N, Nv, ldiv)
-        α = sqrt(@kdotr(n, v, Nv))
+        α = knorm_elliptic(n, v, Nv)
         if α ≠ 0
-          @kscal!(n, one(FC)/α, v)
-          NisI || @kscal!(n, one(FC)/α, Nv)
+          kdiv!(n, v, α)
+          NisI || kdiv!(n, Nv, α)
         end
       end
 
@@ -335,25 +341,25 @@ kwargs_lsqr = (:M, :N, :ldiv, :sqd, :λ, :radius, :etol, :axtol, :btol, :conlim,
 
       xENorm² = xENorm² + ϕ * ϕ
       err_vec[mod(iter, window) + 1] = ϕ
-      iter ≥ window && (err_lbnd = @knrm2(window, err_vec))
+      iter ≥ window && (err_lbnd = knorm(window, err_vec))
 
       τ = s * ϕ
       θ = s * α
       ρbar = -c * α
-      dNorm² += @kdotr(n, w, w) / ρ^2
+      dNorm² += kdotr(n, w, w) / ρ^2
 
       # if a trust-region constraint is give, compute step to the boundary
       # the step ϕ/ρ is not necessarily positive
       σ = ϕ / ρ
       if radius > 0
-        t1, t2 = to_boundary(n, x, w, radius)
+        t1, t2 = to_boundary(n, x, w, v, radius)
         tmax, tmin = max(t1, t2), min(t1, t2)
         on_boundary = σ > tmax || σ < tmin
         σ = σ > 0 ? min(σ, tmax) : max(σ, tmin)
       end
 
-      @kaxpy!(n, σ, w, x)  # x = x + ϕ / ρ * w
-      @kaxpby!(n, one(FC), v, -θ/ρ, w)  # w = v - θ / ρ * w
+      kaxpy!(n, σ, w, x)  # x = x + ϕ / ρ * w
+      kaxpby!(n, one(FC), v, -θ/ρ, w)  # w = v - θ / ρ * w
 
       # Use a plane rotation on the right to eliminate the super-diagonal
       # element (θ) of the upper-bidiagonal matrix.
@@ -384,11 +390,11 @@ kwargs_lsqr = (:M, :N, :ldiv, :sqd, :λ, :radius, :etol, :axtol, :btol, :conlim,
 
       test1 = rNorm / β₁
       test2 = ArNorm / (Anorm * rNorm)
-      test3 = 1 / Acond
+      test3 = inv(Acond)
       t1    = test1 / (one(T) + Anorm * xNorm / β₁)
       rNormtol = btol + axtol * Anorm * xNorm / β₁
 
-      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %7.1e  %7.1e  %7.1e  %7.1e  %7.1e  %.2fs\n", iter, α, β, rNorm, ArNorm, test1, test2, Anorm, Acond, ktimer(start_time))
+      kdisplay(iter, verbose) && @printf(iostream, "%5d  %7.1e  %7.1e  %7.1e  %7.1e  %7.1e  %7.1e  %7.1e  %7.1e  %.2fs\n", iter, α, β, rNorm, ArNorm, test1, test2, Anorm, Acond, start_time |> ktimer)
 
       # Stopping conditions that do not depend on user input.
       # This is to guard against tolerances that are unreasonably small.
@@ -397,7 +403,7 @@ kwargs_lsqr = (:M, :N, :ldiv, :sqd, :λ, :radius, :etol, :axtol, :btol, :conlim,
       zero_resid_mach = (one(T) + t1 ≤ one(T))
 
       # Stopping conditions based on user-provided tolerances.
-      user_requested_exit = callback(solver) :: Bool
+      user_requested_exit = callback(workspace) :: Bool
       tired  = iter ≥ itmax
       ill_cond_lim = (test3 ≤ ctol)
       solved_lim = (test2 ≤ axtol)
@@ -428,8 +434,8 @@ kwargs_lsqr = (:M, :N, :ldiv, :sqd, :λ, :radius, :etol, :axtol, :btol, :conlim,
     stats.niter = iter
     stats.solved = solved
     stats.inconsistent = !zero_resid
-    stats.timer = ktimer(start_time)
+    stats.timer = start_time |> ktimer
     stats.status = status
-    return solver
+    return workspace
   end
 end

@@ -1,5 +1,8 @@
 using Krylov, LinearAlgebra, SparseArrays, Printf, Random, Test
-import Krylov.KRYLOV_SOLVERS
+
+import Krylov: solution, statistics, results, elapsed_time, elapsed_allocation_time,
+               solution_count, iteration_count, Aprod_count, Atprod_count,
+               issolved, issolved_primal, issolved_dual
 
 Random.seed!(666)
 
@@ -9,6 +12,7 @@ include("test_stats.jl")
 include("test_block_processes.jl")
 include("test_processes.jl")
 
+include("test_usymlqr.jl")
 include("test_minares.jl")
 include("test_car.jl")
 include("test_fgmres.jl")
@@ -35,6 +39,7 @@ include("test_minres_qlp.jl")
 include("test_symmlq.jl")
 include("test_bilq.jl")
 include("test_cgls.jl")
+include("test_cgls_lanczos_shift.jl")
 include("test_crls.jl")
 include("test_cgne.jl")
 include("test_crmr.jl")
@@ -47,6 +52,6 @@ include("test_cr.jl")
 
 include("test_allocations.jl")
 include("test_mp.jl")
-include("test_solvers.jl")
+include("test_interface.jl")
 include("test_warm_start.jl")
 include("test_verbose.jl")
